@@ -1,0 +1,9 @@
+
+# Python virtual environment
+dashboard/.venv/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+dashboard/.venv
