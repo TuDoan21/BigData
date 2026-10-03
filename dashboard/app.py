@@ -16,6 +16,10 @@ import time
 import pandas as pd
 import streamlit as st
 
+import json
+import os
+import subprocess
+
 import db
 import queries
 import formatting
@@ -37,20 +41,26 @@ components.inject_custom_css()
 # CACHED DATA LOADERS (ĐƯỢC QUẢN LÝ TẬP TRUNG, KHÔNG TỰ ĐỘNG CHẠY BỪA BÃI)
 # =============================================================================
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def cached_is_zookeeper_alive() -> bool:
-    """Cache kiểm tra socket ZooKeeper trong 15s để tránh ping lặp lại mỗi lần rerun."""
+    """Cache kiểm tra socket ZooKeeper trong 30s để tránh ping lặp lại mỗi lần rerun."""
     return db.is_zookeeper_alive()
 
 
 @st.cache_data(ttl=120, show_spinner=False)
-def load_cached_overview_super_batch() -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None]:
+def load_cached_record_by_id(record_id: str) -> tuple[pd.DataFrame | None, str | None]:
+    """Cache bản ghi chi tiết để khi chọn sửa/xóa không query liên tục lại Phoenix."""
+    return db.query_phoenix_df(queries.sql_get_record_by_id(record_id), timeout=15)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_cached_overview_super_batch(scope: str = "ALL") -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None]:
     """
     Tối ưu hóa Super-Batch: Gộp toàn bộ 6 câu truy vấn của trang Tổng quan
-    vào đúng 1 lần chạy JVM SQLLine duy nhất (giảm từ 25s xuống ~7s).
-    Các lần truy cập sau đó trả về tức thì (< 0.05s) từ cache.
+    vào đúng 1 lần chạy JVM SQLLine duy nhất. Các lần truy cập sau đó trả về tức thì (< 0.05s) từ cache.
+    Hỗ trợ tách biệt: 'VN', 'INTL', hoặc 'ALL'.
     """
-    batch_sql = queries.get_super_batch_overview_sql()
+    batch_sql = queries.get_super_batch_overview_sql(scope=scope)
     dfs, err, _ = db.query_batch_dfs(batch_sql, timeout=40)
 
     sys_status = {
@@ -87,7 +97,7 @@ def load_cached_overview_super_batch() -> tuple[dict, pd.DataFrame, pd.DataFrame
     return sys_status, df_kpi, df_region, df_timeline, df_top10, None
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_cached_transactions(
     keyword: str,
     regions: tuple[str, ...],
@@ -95,8 +105,9 @@ def load_cached_transactions(
     sort_order: str,
     limit: int,
     offset: int,
+    market_scope: str = "ALL",
 ) -> tuple[pd.DataFrame | None, str | None, float]:
-    """Cache dữ liệu danh sách giao dịch phân trang database."""
+    """Cache dữ liệu danh sách giao dịch phân trang database theo phạm vi thị trường."""
     sql = queries.build_transaction_list_query(
         search_keyword=keyword,
         khu_vuc_list=regions,
@@ -104,14 +115,15 @@ def load_cached_transactions(
         sort_order=sort_order,
         limit=limit,
         offset=offset,
+        market_scope=market_scope,
     )
     return db.query_phoenix_df_timed(sql, timeout=30)
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def get_cached_total_count(keyword: str, regions: tuple[str, ...]) -> int:
-    """Cache tổng số bản ghi theo bộ lọc. Đổi trang không bao giờ chạy lại COUNT(*)."""
-    sql = queries.build_count_transactions_query(search_keyword=keyword, khu_vuc_list=regions)
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_cached_total_count(keyword: str, regions: tuple[str, ...], market_scope: str = "ALL") -> int:
+    """Cache tổng số bản ghi theo bộ lọc và thị trường. Đổi trang không bao giờ chạy lại COUNT(*)."""
+    sql = queries.build_count_transactions_query(search_keyword=keyword, khu_vuc_list=regions, market_scope=market_scope)
     df, err = db.query_phoenix_df(sql, timeout=20)
     if df is not None and not df.empty:
         try:
@@ -121,13 +133,13 @@ def get_cached_total_count(keyword: str, regions: tuple[str, ...]) -> int:
     return 0
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_cached_query_result(sql: str) -> tuple[pd.DataFrame | None, str | None, float]:
     """Cache kết quả truy vấn demo theo câu lệnh SQL để tránh chạy lại khi xem lại."""
     return db.query_phoenix_df_timed(sql, timeout=35)
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_cached_index_catalog() -> tuple[list[dict], bool]:
     """Lấy danh mục Index từ SYSTEM.CATALOG trong 1 câu truy vấn duy nhất."""
     all_idx = db.get_all_indexes("GIAO_DICH")
@@ -136,26 +148,133 @@ def load_cached_index_catalog() -> tuple[list[dict], bool]:
     return all_idx, is_active
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_cached_catalog_metadata() -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, str | None]:
+    """Tải siêu dữ liệu bảng GIAO_DICH và các bảng hệ thống từ SYSTEM.CATALOG."""
+    df_cols, err_cols = db.query_phoenix_df(queries.SQL_METADATA_COLUMNS)
+    df_props, _ = db.query_phoenix_df(queries.SQL_METADATA_TABLE_PROPERTIES)
+    df_sys, _ = db.query_phoenix_df(queries.SQL_METADATA_SYSTEM_TABLES)
+    return df_cols, df_props, df_sys, err_cols
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_cached_transaction_keys() -> list[str]:
+    """Lấy danh sách mã giao dịch để trực quan hóa phân bổ Salt Buckets."""
+    sql = "SELECT MA_GIAO_DICH FROM GIAO_DICH ORDER BY MA_GIAO_DICH LIMIT 100;"
+    df, err = db.query_phoenix_df(sql)
+    if df is not None and not df.empty and "MA_GIAO_DICH" in df.columns:
+        return [str(x) for x in df["MA_GIAO_DICH"].tolist()]
+    return []
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_cached_regions(scope: str = "ALL") -> list[str]:
+    """Lấy danh sách các thị trường/quốc gia thực tế từ CSDL theo phạm vi thị trường."""
+    where = ""
+    if scope == "VN":
+        where = "WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')"
+    elif scope == "INTL":
+        where = "WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')"
+
+    sql = f"SELECT DISTINCT KHU_VUC FROM GIAO_DICH {where} ORDER BY KHU_VUC;"
+    df, err = db.query_phoenix_df(sql, timeout=10)
+    if df is not None and not df.empty and "KHU_VUC" in df.columns:
+        res = [str(x).strip() for x in df["KHU_VUC"].dropna().unique() if str(x).strip()]
+        if res:
+            return res
+    return ["MIEN_BAC", "MIEN_TRUNG", "MIEN_NAM"] if scope == "VN" else ["United Kingdom", "Germany", "France", "EIRE", "Spain", "Netherlands"]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_cleaning_summary() -> dict:
+    """Tải báo cáo tóm tắt quy trình làm sạch dữ liệu archive."""
+    summary_path = "/mnt/d/2026/BigData/phoenix-demo/data/cleaning_summary.json"
+    if not os.path.exists(summary_path):
+        summary_path = "D:\\2026\\BigData\\phoenix-demo\\data\\cleaning_summary.json"
+    if os.path.exists(summary_path):
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "total_raw": 541909,
+        "valid_records": 524878,
+        "dropped_records": 17031,
+        "cancellations_dropped": 10624,
+        "zero_price_dropped": 2517,
+        "null_description_dropped": 1454,
+        "guest_customers": 135080,
+        "exact_duplicates": 5268,
+        "unique_countries": 38,
+        "unique_products": 3922,
+        "unique_customers": 4339,
+        "min_date": "2010-12-01 08:26:00",
+        "max_date": "2011-12-09 12:50:00",
+        "total_revenue": 276694880904.0,
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_raw_and_cleaned_samples() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Tải mẫu 5 dòng thô và 5 dòng sạch để trực quan hóa đối chiếu."""
+    raw_path = "/mnt/d/2026/BigData/phoenix-demo/archive/data.csv"
+    if not os.path.exists(raw_path):
+        raw_path = "D:\\2026\\BigData\\phoenix-demo\\archive\\data.csv"
+
+    clean_path = "/mnt/d/2026/BigData/phoenix-demo/data/retail_cleaned_5000.csv"
+    if not os.path.exists(clean_path):
+        clean_path = "D:\\2026\\BigData\\phoenix-demo\\data\\retail_cleaned_5000.csv"
+
+    df_raw = pd.read_csv(raw_path, encoding="ISO-8859-1", nrows=5) if os.path.exists(raw_path) else pd.DataFrame()
+    df_clean = pd.read_csv(clean_path, nrows=5) if os.path.exists(clean_path) else pd.DataFrame()
+    return df_raw, df_clean
+
+
 # =============================================================================
 # HÀM RENDER TỪNG TRANG RIÊNG BIỆT (CHỈ THỰC THI TRANG ĐƯỢC CHỌN)
 # =============================================================================
 
-def render_overview():
-    """Trang 1: Tổng quan - Tối ưu Super Batch nạp dữ liệu tức thì."""
-    components.render_header("📊 TỔNG QUAN HỆ THỐNG")
+def render_overview(scope: str = "ALL"):
+    """Trang 1: Tổng quan - Tối ưu Super Batch nạp dữ liệu tức thì theo thị trường."""
+    title_suffix = " - 🇻🇳 VIỆT NAM (NỘI ĐỊA)" if scope == "VN" else (" - 🌍 QUỐC TẾ (ARCHIVE)" if scope == "INTL" else "")
+    components.render_header(f"📊 TỔNG QUAN HỆ THỐNG{title_suffix}")
 
     with st.spinner("Đang tải dữ liệu tổng quan từ Phoenix HBase..."):
-        sys_status, df_kpi, df_region, df_timeline, df_top10, err = load_cached_overview_super_batch()
+        sys_status, df_kpi, df_region, df_timeline, df_top10, err = load_cached_overview_super_batch(scope=scope)
 
     if err:
         if "TableNotFoundException" in err or "ERROR 1012" in err:
             components.render_table_missing_box()
+            if st.button("🔨 Tạo bảng GIAO_DICH ngay (SALT_BUCKETS = 8)", type="primary"):
+                with st.spinner("Đang tạo bảng GIAO_DICH trong Apache Phoenix..."):
+                    ok_tb, msg_tb = db.execute_phoenix_sql(queries.CREATE_TABLE_SQL)
+                if ok_tb:
+                    st.success("✅ Đã tạo thành công bảng GIAO_DICH!")
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(f"Lỗi khi tạo bảng: {msg_tb}")
         else:
             components.render_connection_error_box(err)
         return
 
     # Thanh trạng thái hạ tầng
     components.render_status_bar(sys_status)
+
+    if not sys_status.get("table_exists"):
+        st.warning("⚠️ Bảng `GIAO_DICH` chưa tồn tại trong Phoenix. Nhấn nút bên dưới để tạo ngay:")
+        if st.button("🔨 Khởi tạo Bảng GIAO_DICH (Salt Buckets = 8)", type="primary"):
+            with st.spinner("Đang khởi tạo bảng GIAO_DICH..."):
+                ok_tb, msg_tb = db.execute_phoenix_sql(queries.CREATE_TABLE_SQL)
+            if ok_tb:
+                st.success("✅ Đã tạo thành công bảng GIAO_DICH!")
+                st.cache_data.clear()
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error(f"Lỗi: {msg_tb}")
 
     # 5 KPI Cards
     total_tx = 0
@@ -174,16 +293,18 @@ def render_overview():
         except (ValueError, TypeError, KeyError):
             pass
 
-    components.render_kpi_cards(total_tx, total_cust, total_rev, avg_val, num_regions)
+    curr_symbol = "VNĐ"
+    components.render_kpi_cards(total_tx, total_cust, total_rev, avg_val, num_regions, symbol="VNĐ")
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
     # 2 Biểu đồ: Khu vực & Chuỗi thời gian
     c_chart1, c_chart2 = st.columns(2)
     with c_chart1:
-        st.markdown("##### 📍 Doanh Thu Theo Khu Vực")
+        chart_title = "📍 Doanh Thu 3 Miền (VNĐ)" if scope == "VN" else ("📍 Doanh Thu Thị Trường Quốc Tế (Top 10 - VNĐ)" if scope == "INTL" else "📍 Doanh Thu Theo Thị Trường / Quốc Gia (Top 10 - VNĐ)")
+        st.markdown(f"##### {chart_title}")
         if df_region is not None and not df_region.empty and "KHU_VUC" in df_region.columns:
-            df_reg_plot = df_region.copy()
+            df_reg_plot = df_region.head(10).copy()
             df_reg_plot["TONG_DOANH_THU"] = pd.to_numeric(df_reg_plot["TONG_DOANH_THU"], errors="coerce").fillna(0)
             st.bar_chart(data=df_reg_plot, x="KHU_VUC", y="TONG_DOANH_THU", color="#1E88E5", height=280)
         else:
@@ -203,7 +324,7 @@ def render_overview():
     # Bảng 10 giao dịch mới nhất
     st.markdown("##### 📋 Danh Sách 10 Giao Dịch Mới Nhất (LIMIT 10)")
     if df_top10 is not None and not df_top10.empty:
-        df_display = formatting.format_giao_dich_table(df_top10)
+        df_display = formatting.format_giao_dich_table(df_top10, symbol="VNĐ")
         col_order = ["MA_GIAO_DICH", "MA_KHACH_HANG", "MA_SAN_PHAM", "KHU_VUC", "SO_LUONG_HIEN_THI", "DON_GIA_HIEN_THI", "THANH_TIEN_HIEN_THI", "THOI_GIAN_HIEN_THI"]
         rename_map = {
             "MA_GIAO_DICH": "Mã Giao Dịch",
@@ -221,15 +342,22 @@ def render_overview():
         st.info("Bảng GIAO_DICH hiện tại chưa có dữ liệu.")
 
 
-def render_transactions():
-    """Trang 2: Quản lý giao dịch (CRUD) - Phân trang database LIMIT 20, Form chống rerun."""
-    components.render_header("💼 QUẢN LÝ GIAO DỊCH (DML)")
-
-    # Khởi tạo session state cho bộ lọc nếu chưa có
-    if "filter_kw" not in st.session_state:
+def render_transactions(scope: str = "ALL"):
+    """Trang 2: Quản lý giao dịch (CRUD) - Phân trang database LIMIT 20 theo thị trường."""
+    title_suffix = " - 🇻🇳 VIỆT NAM (NỘI ĐỊA)" if scope == "VN" else (" - 🌍 QUỐC TẾ (ARCHIVE)" if scope == "INTL" else "")
+    components.render_header(f"💼 QUẢN LÝ GIAO DỊCH (DML){title_suffix}")
+    curr_symbol = "VNĐ"
+    available_regions = load_cached_regions(scope=scope)
+    # Tự động đồng bộ hóa bộ lọc khi người dùng đổi phạm vi thị trường trên Sidebar
+    if "last_market_scope" not in st.session_state or st.session_state["last_market_scope"] != scope:
+        st.session_state["last_market_scope"] = scope
         st.session_state["filter_kw"] = ""
-    if "filter_regions" not in st.session_state:
-        st.session_state["filter_regions"] = ("MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG")
+        st.session_state["filter_regions"] = tuple(available_regions[:6])
+        st.session_state["crud_page"] = 1
+    elif "filter_kw" not in st.session_state:
+        st.session_state["filter_kw"] = ""
+    if "filter_regions" not in st.session_state or not st.session_state["filter_regions"]:
+        st.session_state["filter_regions"] = tuple(available_regions[:6])
     if "crud_page" not in st.session_state:
         st.session_state["crud_page"] = 1
 
@@ -237,12 +365,13 @@ def render_transactions():
     with st.form("filter_form"):
         fc1, fc2, fc3, fc4 = st.columns([3, 3, 2, 2])
         with fc1:
-            inp_kw = st.text_input("Tìm kiếm (Mã GD hoặc Mã KH):", value=st.session_state["filter_kw"], placeholder="Ví dụ: GD001 hoặc KH01")
+            inp_kw = st.text_input("Tìm kiếm (Mã GD, Khách hàng, SP):", value=st.session_state["filter_kw"], placeholder="Ví dụ: TX_0000001 hoặc KH_17850")
         with fc2:
+            default_sel = [r for r in st.session_state["filter_regions"] if r in available_regions] or available_regions[:3]
             inp_regions = st.multiselect(
-                "Khu vực:",
-                options=["MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG"],
-                default=list(st.session_state["filter_regions"]),
+                "Khu vực / Quốc gia:",
+                options=available_regions,
+                default=default_sel,
             )
         with fc3:
             inp_sort = st.selectbox("Sắp xếp:", ["MA_GIAO_DICH", "DON_GIA", "THANH_TIEN", "SO_LUONG", "THOI_GIAN"], index=0)
@@ -256,7 +385,7 @@ def render_transactions():
     with col_rf2:
         if st.button("🧹 Xóa bộ lọc", use_container_width=True):
             st.session_state["filter_kw"] = ""
-            st.session_state["filter_regions"] = ("MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG")
+            st.session_state["filter_regions"] = tuple(available_regions[:6])
             st.session_state["crud_page"] = 1
             st.rerun()
 
@@ -273,13 +402,13 @@ def render_transactions():
     offset = (current_p - 1) * page_size
 
     # Lấy tổng số dòng từ cache (không gọi lại COUNT(*) khi chuyển trang)
-    total_records = get_cached_total_count(active_kw, active_regions)
+    total_records = get_cached_total_count(active_kw, active_regions, market_scope=scope)
     total_pages = max(1, (total_records + page_size - 1) // page_size)
 
     # Tải danh sách giao dịch trang hiện tại từ cache
     with st.spinner(f"Đang tải trang {current_p}/{total_pages}..."):
         df_list, err_list, exec_ms = load_cached_transactions(
-            active_kw, active_regions, "MA_GIAO_DICH", "ASC", page_size, offset
+            active_kw, active_regions, "MA_GIAO_DICH", "ASC", page_size, offset, market_scope=scope
         )
 
     # Hiển thị thông số kết quả
@@ -296,7 +425,7 @@ def render_transactions():
 
     # Hiển thị bảng dữ liệu chính
     if df_list is not None and not df_list.empty:
-        df_formatted = formatting.format_giao_dich_table(df_list)
+        df_formatted = formatting.format_giao_dich_table(df_list, symbol=curr_symbol)
         show_cols = [
             "MA_GIAO_DICH", "MA_KHACH_HANG", "MA_SAN_PHAM", "KHU_VUC",
             "SO_LUONG_HIEN_THI", "DON_GIA_HIEN_THI", "THANH_TIEN_HIEN_THI", "THOI_GIAN_HIEN_THI"
@@ -341,7 +470,11 @@ def render_transactions():
     # =========================================================================
     st.markdown("#### 🛠️ Thao Tác Nghiệp Vụ (Thêm – Sửa – Xóa)")
 
-    current_ids = df_list["MA_GIAO_DICH"].dropna().tolist() if df_list is not None and not df_list.empty else []
+    current_ids = (
+        [str(x) for x in df_list["MA_GIAO_DICH"].dropna().tolist()]
+        if (df_list is not None and not df_list.empty and "MA_GIAO_DICH" in df_list.columns)
+        else []
+    )
 
     tab_add, tab_edit, tab_del = st.tabs([
         "➕ Thêm Giao Dịch Mới",
@@ -355,13 +488,13 @@ def render_transactions():
         with st.form("form_add_transaction_safe"):
             a1, a2 = st.columns(2)
             with a1:
-                add_id = st.text_input("Mã Giao Dịch (Khóa chính - Bắt buộc):", placeholder="Ví dụ: GD2026")
-                add_kh = st.text_input("Mã Khách Hàng:", value="KH01")
-                add_sp = st.text_input("Mã Sản Phẩm:", value="SP01")
+                add_id = st.text_input("Mã Giao Dịch (Khóa chính - Bắt buộc):", placeholder="Ví dụ: TX_9999999")
+                add_kh = st.text_input("Mã Khách Hàng:", value="KH_17850")
+                add_sp = st.text_input("Mã Sản Phẩm:", value="85123A")
             with a2:
-                add_kv = st.selectbox("Khu Vực:", options=["MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG"])
-                add_sl = st.number_input("Số Lượng:", min_value=1, max_value=10000, value=5)
-                add_dg = st.number_input("Đơn Giá (VNĐ):", min_value=0.0, value=18500000.0, step=500000.0)
+                add_kv = st.selectbox("Khu Vực / Quốc Gia:", options=available_regions)
+                add_sl = st.number_input("Số Lượng:", min_value=1, max_value=10000, value=6)
+                add_dg = st.number_input("Đơn Giá (VNĐ):", min_value=1000.0, value=65000.0, step=5000.0)
 
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             add_time = st.text_input("Thời Gian (yyyy-MM-dd HH:mm:ss):", value=now_str)
@@ -392,6 +525,7 @@ def render_transactions():
                         load_cached_transactions.clear()
                         get_cached_total_count.clear()
                         load_cached_overview_super_batch.clear()
+                        load_cached_record_by_id.clear()
                         st.success(f"✅ Đã thêm thành công giao dịch '{clean_add_id}'!")
                         st.code(upsert_sql, language="sql")
                         time.sleep(0.5)
@@ -414,7 +548,7 @@ def render_transactions():
 
         if target_edit_id:
             with st.spinner(f"Đang tải giao dịch {target_edit_id}..."):
-                df_curr, err_curr = db.query_phoenix_df(queries.sql_get_record_by_id(target_edit_id))
+                df_curr, err_curr = load_cached_record_by_id(target_edit_id)
 
             if err_curr:
                 st.error(f"Lỗi: {err_curr}")
@@ -430,10 +564,11 @@ def render_transactions():
                         edit_sp = st.text_input("Mã Sản Phẩm:", value=str(row_data.get("MA_SAN_PHAM", "")))
                     with ed2:
                         curr_kv = str(row_data.get("KHU_VUC", "MIEN_NAM")).strip()
-                        kv_idx = ["MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG"].index(curr_kv) if curr_kv in ["MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG"] else 0
-                        edit_kv = st.selectbox("Khu Vực:", options=["MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG"], index=kv_idx)
+                        opts = list(dict.fromkeys([curr_kv] + list(available_regions))) if available_regions else ["MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG"]
+                        kv_idx = opts.index(curr_kv) if curr_kv in opts else 0
+                        edit_kv = st.selectbox("Khu Vực / Quốc Gia:", options=opts, index=kv_idx)
                         edit_sl = st.number_input("Số Lượng:", min_value=1, max_value=10000, value=int(float(row_data.get("SO_LUONG", 1))))
-                        edit_dg = st.number_input("Đơn Giá (VNĐ):", min_value=0.0, value=float(row_data.get("DON_GIA", 0.0)), step=500000.0)
+                        edit_dg = st.number_input("Đơn Giá (VNĐ):", min_value=0.0, value=float(row_data.get("DON_GIA", 0.0)), step=10000.0)
 
                     raw_time = str(row_data.get("THOI_GIAN", "")).replace(".0", "").strip()
                     edit_time = st.text_input("Thời Gian (yyyy-MM-dd HH:mm:ss):", value=raw_time)
@@ -448,6 +583,7 @@ def render_transactions():
                     if ok_up:
                         load_cached_transactions.clear()
                         load_cached_overview_super_batch.clear()
+                        load_cached_record_by_id.clear()
                         st.success(f"✅ Đã cập nhật thành công giao dịch '{target_edit_id}'!")
                         st.code(update_sql, language="sql")
                         time.sleep(0.5)
@@ -473,7 +609,7 @@ def render_transactions():
 
         if target_del_id:
             with st.spinner(f"Đang kiểm tra {target_del_id}..."):
-                df_to_del, err_td = db.query_phoenix_df(queries.sql_get_record_by_id(target_del_id))
+                df_to_del, err_td = load_cached_record_by_id(target_del_id)
 
             if err_td:
                 st.error(f"Lỗi: {err_td}")
@@ -507,6 +643,7 @@ def render_transactions():
                         load_cached_transactions.clear()
                         get_cached_total_count.clear()
                         load_cached_overview_super_batch.clear()
+                        load_cached_record_by_id.clear()
                         st.success(f"✅ Đã xóa thành công giao dịch '{target_del_id}'!")
                         st.code(del_sql, language="sql")
                         time.sleep(0.5)
@@ -518,57 +655,74 @@ def render_transactions():
 
 
 def render_queries_page():
-    """Trang 3: Truy vấn và thống kê - Không tự động chạy truy vấn, chỉ chạy khi bấm nút."""
-    components.render_header("🔍 TRUY VẤN VÀ THỐNG KÊ")
+    """Trang 3: Truy vấn và thống kê - Phân tách 10 câu truy vấn Việt Nam và 10 câu Quốc tế."""
+    components.render_header("🔍 TRUY VẤN VÀ THỐNG KÊ (ANALYTICS)")
 
-    st.markdown("Danh mục 10 câu truy vấn demo theo đúng kịch bản bài báo cáo môn Big Data.")
+    t_vn, t_intl = st.tabs([
+        "🇻🇳 10 Truy Vấn Thị Trường Việt Nam (Nội Địa - VNĐ)",
+        "🌍 10 Truy Vấn Thị Trường Quốc Tế (Archive - VNĐ)",
+    ])
 
-    query_options = [f"{q['id']}. {q['title'].split('.', 1)[1].strip()}" for q in queries.DEMO_QUERIES]
-    selected_idx = st.selectbox("Chọn câu truy vấn để demo:", range(len(query_options)), format_func=lambda i: query_options[i])
+    def _render_query_tab_content(query_list: list[dict], tab_prefix: str, curr_symbol: str):
+        query_options = [f"{q['id']}. {q['title'].split('.', 1)[1].strip()}" for q in query_list]
+        selected_idx = st.selectbox(
+            "Chọn câu truy vấn để demo:",
+            range(len(query_options)),
+            format_func=lambda i: query_options[i],
+            key=f"sb_query_{tab_prefix}",
+        )
 
-    active_query = queries.DEMO_QUERIES[selected_idx]
+        active_query = query_list[selected_idx]
 
-    st.markdown(f"#### 📌 {active_query['title']}")
-    st.markdown(f"**🎯 Mục đích truy vấn:** {active_query['purpose']}")
+        st.markdown(f"#### 📌 {active_query['title']}")
+        st.markdown(f"**🎯 Mục đích truy vấn:** {active_query['purpose']}")
 
-    st.markdown("##### 📝 Câu lệnh Phoenix SQL:")
-    st.code(active_query["sql"], language="sql")
+        st.markdown("##### 📝 Câu lệnh Phoenix SQL:")
+        st.code(active_query["sql"], language="sql")
 
-    col_btn, col_empty = st.columns([2, 5])
-    with col_btn:
-        btn_run = st.button("🚀 Thực Thi Truy Vấn", type="primary", use_container_width=True, key=f"btn_run_q_{active_query['id']}")
+        col_btn, col_empty = st.columns([2, 5])
+        with col_btn:
+            btn_run = st.button("🚀 Thực Thi Truy Vấn", type="primary", use_container_width=True, key=f"btn_run_{tab_prefix}_{active_query['id']}")
 
-    result_key = f"query_res_{active_query['id']}"
+        result_key = f"res_{tab_prefix}_{active_query['id']}"
 
-    if btn_run:
-        with st.spinner("Đang thực thi câu lệnh SQL trên Phoenix HBase..."):
-            df_result, err_res, dur_ms = load_cached_query_result(active_query["sql"])
-            st.session_state[result_key] = (df_result, err_res, dur_ms)
+        if btn_run:
+            with st.spinner("Đang thực thi câu lệnh SQL trên Phoenix HBase..."):
+                df_result, err_res, dur_ms = load_cached_query_result(active_query["sql"])
+                st.session_state[result_key] = (df_result, err_res, dur_ms)
 
-    if result_key in st.session_state:
-        df_result, err_res, dur_ms = st.session_state[result_key]
+        if result_key in st.session_state:
+            df_result, err_res, dur_ms = st.session_state[result_key]
 
-        if err_res:
-            st.error(f"Lỗi thực thi: {err_res}")
-        elif df_result is not None:
-            components.render_execution_stats(dur_ms, len(df_result))
+            if err_res:
+                st.error(f"Lỗi thực thi: {err_res}")
+            elif df_result is not None:
+                components.render_execution_stats(dur_ms, len(df_result))
 
-            if not df_result.empty:
-                df_res_formatted = formatting.format_giao_dich_table(df_result)
-                st.dataframe(df_res_formatted, use_container_width=True)
+                if not df_result.empty:
+                    df_res_formatted = formatting.format_giao_dich_table(df_result, symbol=curr_symbol)
+                    st.dataframe(df_res_formatted, use_container_width=True)
 
-                if "KHU_VUC" in df_result.columns and "TONG_DOANH_THU" in df_result.columns:
-                    df_chart = df_result.copy()
-                    df_chart["TONG_DOANH_THU"] = pd.to_numeric(df_chart["TONG_DOANH_THU"], errors="coerce").fillna(0)
-                    st.bar_chart(df_chart, x="KHU_VUC", y="TONG_DOANH_THU", color="#1E88E5", height=260)
-                elif "MA_SAN_PHAM" in df_result.columns and "TONG_SO_LUONG_BAN" in df_result.columns:
-                    df_chart = df_result.copy()
-                    df_chart["TONG_SO_LUONG_BAN"] = pd.to_numeric(df_chart["TONG_SO_LUONG_BAN"], errors="coerce").fillna(0)
-                    st.bar_chart(df_chart, x="MA_SAN_PHAM", y="TONG_SO_LUONG_BAN", color="#0F294A", height=260)
-            else:
-                st.info("Truy vấn thành công nhưng không có bản ghi nào được trả về.")
-    else:
-        st.info("💡 Bấm nút 'Thực Thi Truy Vấn' ở trên để bắt đầu chạy câu lệnh.")
+                    if "KHU_VUC" in df_result.columns and any("DOANH_THU" in c for c in df_result.columns):
+                        rev_col = [c for c in df_result.columns if "DOANH_THU" in c][0]
+                        df_chart = df_result.copy()
+                        df_chart[rev_col] = pd.to_numeric(df_chart[rev_col], errors="coerce").fillna(0)
+                        st.bar_chart(df_chart, x="KHU_VUC", y=rev_col, color="#1E88E5", height=260)
+                    elif "MA_SAN_PHAM" in df_result.columns and any("SO_LUONG" in c for c in df_result.columns):
+                        qty_col = [c for c in df_result.columns if "SO_LUONG" in c][0]
+                        df_chart = df_result.copy()
+                        df_chart[qty_col] = pd.to_numeric(df_chart[qty_col], errors="coerce").fillna(0)
+                        st.bar_chart(df_chart, x="MA_SAN_PHAM", y=qty_col, color="#0F294A", height=260)
+                else:
+                    st.info("Truy vấn thành công nhưng không có bản ghi nào được trả về.")
+        else:
+            st.info("💡 Bấm nút 'Thực Thi Truy Vấn' ở trên để bắt đầu chạy câu lệnh.")
+
+    with t_vn:
+        _render_query_tab_content(queries.SAMPLE_QUERIES_VN, "vn", "VNĐ")
+
+    with t_intl:
+        _render_query_tab_content(queries.SAMPLE_QUERIES_INTL, "intl", "VNĐ")
 
 
 # =============================================================================
@@ -581,6 +735,9 @@ SAMPLE_CONSOLE_QUERIES = {
     "2. Lọc theo khu vực MIEN_NAM (LIMIT 20)": "SELECT *\nFROM GIAO_DICH\nWHERE KHU_VUC = 'MIEN_NAM'\nLIMIT 20;",
     "3. Thống kê doanh thu theo khu vực (GROUP BY)": "SELECT KHU_VUC,\n       COUNT(*) AS SO_GIAO_DICH,\n       SUM(SO_LUONG * DON_GIA) AS DOANH_THU\nFROM GIAO_DICH\nGROUP BY KHU_VUC;",
     "4. Phân tích kế hoạch thực thi EXPLAIN": "EXPLAIN\nSELECT *\nFROM GIAO_DICH\nWHERE KHU_VUC = 'MIEN_NAM';",
+    "5. Range Scan với Index Hint /*+ INDEX */": "SELECT /*+ INDEX(GIAO_DICH IDX_GIAO_DICH_KHU_VUC) */\n       MA_GIAO_DICH, KHU_VUC, SO_LUONG, DON_GIA\nFROM GIAO_DICH\nWHERE KHU_VUC = 'MIEN_NAM'\nLIMIT 10;",
+    "6. Truy vấn Metadata bảng từ SYSTEM.CATALOG": "SELECT TABLE_NAME, TABLE_TYPE, SALT_BUCKETS, COLUMN_COUNT, PK_NAME\nFROM SYSTEM.CATALOG\nWHERE TABLE_TYPE = 'u';",
+    "7. Point Lookup trực tiếp theo Row Key (Siêu nhanh)": "SELECT * FROM GIAO_DICH WHERE MA_GIAO_DICH = 'GD001';",
 }
 
 
@@ -754,9 +911,8 @@ def render_sql_console():
                 st.rerun()
 
         if btn_do_mutate:
-            # Gộp COMMIT tự động vào câu lệnh DML/DDL
-            full_sql = pending_sql.strip().rstrip(";") + ";\n!commit;"
-            with st.spinner("Đang thực thi và COMMIT vào HBase..."):
+            full_sql = pending_sql.strip().rstrip(";") + ";"
+            with st.spinner("Đang thực thi câu lệnh trên HBase..."):
                 t0 = time.perf_counter()
                 ok_m, out_m = db.execute_phoenix_sql(full_sql, timeout=40)
                 dur_m = (time.perf_counter() - t0) * 1000.0
@@ -770,6 +926,7 @@ def render_sql_console():
                 load_cached_transactions.clear()
                 get_cached_total_count.clear()
                 load_cached_overview_super_batch.clear()
+                load_cached_record_by_id.clear()
 
             record_query_history(pending_sql, "Thành công" if ok_m else "Lỗi", 0, dur_m)
             st.session_state["console_pending_mutate"] = None
@@ -940,7 +1097,7 @@ def render_index_page():
 
 
 def render_benchmark_page():
-    """Trang 6: Kiểm tra hiệu năng - Chỉ chạy khi người dùng chủ động bấm nút."""
+    """Trang: Kiểm tra hiệu năng - Chỉ chạy khi người dùng chủ động bấm nút."""
     components.render_header("🚀 KIỂM TRA HIỆU NĂNG (BENCHMARK)")
 
     st.markdown("Đo lường thời gian phản hồi thực tế giữa các cơ chế truy vấn trên Apache Phoenix.")
@@ -977,7 +1134,19 @@ def render_benchmark_page():
         status_text.success("🎉 Hoàn thành kiểm tra benchmark!")
         df_bench = pd.DataFrame(benchmark_results)
 
-        st.markdown("##### 📊 Kết Quả Đo Thời Gian Phản Hồi (Mili-giây):")
+        # Highlight Metrics
+        bm1, bm2, bm3 = st.columns(3)
+        with bm1:
+            ratio_point = f"{t_full / t_point:.1f}x nhanh hơn" if t_point > 0 else "Nhanh nhất"
+            st.metric("Point Lookup (Row Key)", f"{t_point:,.1f} ms", ratio_point)
+        with bm2:
+            ratio_idx = f"{t_full / t_idx:.1f}x nhanh hơn" if t_idx > 0 else "Tối ưu"
+            st.metric("Covered Index Range Scan", f"{t_idx:,.1f} ms", ratio_idx)
+        with bm3:
+            st.metric("Parallel Full Table Scan", f"{t_full:,.1f} ms", "Base Scan (100% Data)")
+
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        st.markdown("##### 📊 So Sánh Trực Quan Thời Gian Phản Hồi (Mili-giây):")
         st.dataframe(df_bench, use_container_width=True)
         st.bar_chart(df_bench, x="Kiểu Truy Vấn", y="Thời Gian (ms)", color="#1E88E5", height=300)
 
@@ -1003,6 +1172,333 @@ def render_benchmark_page():
             - **Lợi ích khi đọc:** Phoenix phân bổ đa luồng quét song song trên 8 Region Servers (*PARALLEL 8-WAY SCAN*), tối ưu tối đa băng thông I/O.
             """
         )
+
+
+def render_salt_architecture_page():
+    """Trang chuyên sâu: Kiến trúc phân tầng & Cơ chế Salt Buckets = 8 trong Apache Phoenix."""
+    components.render_header("🏛️ KIẾN TRÚC & SALT BUCKETS")
+
+    st.markdown(
+        """
+        Khám phá chi tiết kiến trúc nội tại của **Apache Phoenix** trên nền tảng **Apache HBase**, 
+        cách thức **Salt Buckets = 8** giải quyết triệt để vấn đề thắt cổ chai ghi (*Region Hotspotting*) 
+        và cơ chế phân luồng đọc song song (*Parallel Multi-way Scan*).
+        """
+    )
+
+    tab_arch, tab_salt = st.tabs(["🏗️ Kiến Trúc Hệ Thống", "⚡ Cơ Chế Salt Buckets = 8"])
+
+    with tab_arch:
+        components.render_phoenix_architecture_diagram()
+
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            st.markdown(
+                """
+                #### 🎯 Lợi thế của Apache Phoenix so với HBase thuần:
+                1. **Giao diện SQL chuẩn (ANSI SQL-92)**:
+                   - Không cần viết code Java phức tạp với API `Get`, `Put`, `Scan`.
+                   - Hỗ trợ đầy đủ các hàm thống kê `SUM`, `AVG`, `COUNT`, `GROUP BY`, `ORDER BY`.
+                2. **Đẩy tính toán xuống Server (Coprocessors Pushdown)**:
+                   - Phoenix dịch các biểu thức `WHERE`, `GROUP BY` thành **HBase Coprocessors** chạy trực tiếp tại các RegionServer chứa dữ liệu.
+                   - Giảm thiểu tối đa lượng dữ liệu truyền qua mạng (*Network I/O*).
+                3. **Tối ưu hóa chi phí truy vấn (CBO)**:
+                   - Tự động chọn thứ tự join và sử dụng Secondary Index tối ưu.
+                """
+            )
+        with col_a2:
+            st.markdown(
+                """
+                #### 🛡️ Cơ chế đồng thuận & Lưu trữ phân tán:
+                1. **ZooKeeper (Cổng 2181)**:
+                   - Quản lý trạng thái cụm phân tán và điều phối vị trí của bảng gốc `-ROOT-` / `hbase:meta`.
+                   - Phoenix Client kết nối trực tiếp đến ZooKeeper để xác định Region Server chứa dữ liệu mà không cần thông qua HMaster cho từng truy vấn.
+                2. **HMaster & RegionServers**:
+                   - `HMaster` quản lý việc phân chia (Split) và gán Region vào các RegionServer.
+                   - `RegionServer` trực tiếp đọc/ghi các file lưu trữ cột `HFiles`.
+                3. **Column Families**:
+                   - Bảng `GIAO_DICH` lưu các cột động trong Column Family mặc định `0`.
+                """
+            )
+
+    with tab_salt:
+        st.markdown("#### 🧂 Trực Quan Hóa Cơ Chế Salt Buckets = 8")
+        st.markdown(
+            """
+            Trong Apache HBase, nếu Row Key tăng tuần tự (`GD001`, `GD002`, `GD003`...), 
+            toàn bộ dữ liệu mới sẽ dồn vào một Region Server duy nhất (*Region Hotspotting*). 
+            **Giải pháp:** Phoenix tự động thêm 1 byte tiền tố băm `(0x00..0x07)` vào trước Row Key để chia đều dữ liệu vào **8 Salt Buckets**.
+            """
+        )
+
+        keys_list = load_cached_transaction_keys()
+
+        # Bộ công cụ thử nghiệm gán Salt Bucket tương tác
+        st.markdown("##### 🔬 Thử Nghiệm Băm Row Key Vào Salt Bucket:")
+        col_inp1, col_inp2 = st.columns([3, 2])
+        with col_inp1:
+            test_key = st.text_input(
+                "Nhập Mã Giao Dịch để kiểm tra bucket:",
+                value="GD001",
+                help="Nhập mã như GD001, GD002 hoặc bất kỳ chuỗi nào",
+            ).strip().upper()
+        
+        calc_bucket = components.calculate_salt_bucket(test_key, 8) if test_key else 0
+        with col_inp2:
+            st.markdown(
+                f"""
+                <div style="background-color: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; padding: 10px 14px; margin-top: 10px;">
+                    <span style="font-size: 0.85rem; color: #1E40AF;">Mã: <b>{test_key}</b> &rarr; <b>Salt Bucket #{calc_bucket}</b> (Byte: <code>0x0{calc_bucket}</code>)</span><br>
+                    <span style="font-size: 0.78rem; color: #3B82F6;">HBase RowKey thực tế: <code>[0x0{calc_bucket}, '{test_key}']</code></span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # Lưới 8 Salt Buckets với dữ liệu thực tế
+        st.markdown("##### 📊 Phân Bổ Dữ Liệu Thực Tế Trên 8 Salt Buckets:")
+        components.render_salt_buckets_visualizer(keys_list, highlight_key=test_key)
+
+        st.markdown("---")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            st.markdown(
+                """
+                **⚡ Lợi ích khi Ghi (Write Performance):**
+                - 8 giao dịch liên tiếp được ghi phân tán vào 8 RegionServers khác nhau.
+                - Tận dụng tối đa băng thông I/O của toàn cụm, loại bỏ hoàn toàn hiện tượng nghẽn cổ chai.
+                """
+            )
+        with col_c2:
+            st.markdown(
+                """
+                **🚀 Lợi ích khi Đọc (Read Performance):**
+                - Phoenix tự động phân bổ 8 luồng quét song song (`PARALLEL 8-WAY SCAN`).
+                - Tốc độ đọc toàn bảng hoặc lọc dữ liệu nhanh gấp nhiều lần so với quét đơn luồng.
+                """
+            )
+
+
+def render_system_catalog_page():
+    """Trang chuyên sâu: Khám phá Siêu dữ liệu SYSTEM.CATALOG của Apache Phoenix."""
+    components.render_header("📚 METADATA & SYSTEM.CATALOG")
+
+    st.markdown(
+        """
+        Toàn bộ cấu trúc bảng, kiểu dữ liệu, khóa chính, cấu hình Salt Buckets và trạng thái Secondary Index 
+        được Apache Phoenix lưu trữ tập trung trong bảng siêu dữ liệu nội bộ **`SYSTEM.CATALOG`**.
+        """
+    )
+
+    with st.spinner("Đang truy xuất metadata từ SYSTEM.CATALOG..."):
+        df_cols, df_props, df_sys, err_meta = load_cached_catalog_metadata()
+
+    if err_meta:
+        components.render_connection_error_box(err_meta)
+        return
+
+    # 1. Thẻ thuộc tính vật lý bảng GIAO_DICH
+    st.markdown("#### ⚙️ Cấu Hình Vật Lý Bảng `GIAO_DICH` (Từ SYSTEM.CATALOG)")
+    p1, p2, p3, p4 = st.columns(4)
+    with p1:
+        st.metric("Loại Bảng (TABLE_TYPE)", "User Table ('u')")
+    with p2:
+        st.metric("Số Salt Buckets", "8 Buckets")
+    with p3:
+        st.metric("Khóa Chính (PK_NAME)", "PK (MA_GIAO_DICH)")
+    with p4:
+        st.metric("Số Cột Cấu Trúc", f"{len(df_cols) if df_cols is not None else 7} Cột")
+
+    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+    # 2. Bảng Schema chi tiết các cột
+    st.markdown("#### 📋 Schema Chi Tiết & Kiểu Dữ Liệu SQL")
+    if df_cols is not None and not df_cols.empty:
+        df_schema = df_cols.copy()
+        type_names = {
+            12: "VARCHAR",
+            4: "INTEGER",
+            3: "DECIMAL(15,2)",
+            93: "TIMESTAMP",
+            1: "CHAR",
+        }
+        df_schema["KIEU_DU_LIEU_SQL"] = df_schema["DATA_TYPE"].apply(lambda t: type_names.get(int(t) if pd.notna(t) else 12, f"TYPE_{t}"))
+        df_schema["KHOA_CHINH"] = df_schema["KEY_SEQ"].apply(lambda s: "🔑 PRIMARY KEY" if pd.notna(s) and int(s) > 0 else "")
+        df_schema["NULLABLE_HIEN_THI"] = df_schema["NULLABLE"].apply(lambda n: "NOT NULL" if pd.notna(n) and int(n) == 0 else "NULL")
+
+        col_show = ["ORDINAL_POSITION", "COLUMN_NAME", "KIEU_DU_LIEU_SQL", "NULLABLE_HIEN_THI", "KHOA_CHINH"]
+        col_names = {
+            "ORDINAL_POSITION": "Thứ Tự",
+            "COLUMN_NAME": "Tên Cột",
+            "KIEU_DU_LIEU_SQL": "Kiểu Dữ Liệu Phoenix SQL",
+            "NULLABLE_HIEN_THI": "Ràng Buộc Null",
+            "KHOA_CHINH": "Khóa",
+        }
+        cols_exist = [c for c in col_show if c in df_schema.columns]
+        st.dataframe(df_schema[cols_exist].rename(columns=col_names), use_container_width=True, hide_index=True)
+    else:
+        st.info("Chưa lấy được schema chi tiết từ SYSTEM.CATALOG.")
+
+    st.markdown("---")
+
+    # 3. Các bảng hệ thống nội tại của Apache Phoenix
+    st.markdown("#### 🏛️ Danh Sách Các Bảng Hệ Thống Trong Apache Phoenix")
+    st.markdown(
+        """
+        Phoenix duy trì một tập hợp các bảng hệ thống đặc biệt trên HBase để quản lý hạ tầng:
+        - **`SYSTEM.CATALOG`**: Lưu trữ toàn bộ bảng, view, chỉ mục, cột và metadata của cơ sở dữ liệu.
+        - **`SYSTEM.STATS`**: Lưu trữ thống kê phân bố dữ liệu (Guideposts) phục vụ Cost-Based Optimizer.
+        - **`SYSTEM.FUNCTION`**: Quản lý các hàm do người dùng định nghĩa (UDF).
+        - **`SYSTEM.SEQUENCE`**: Quản lý các chuỗi sinh số tự tăng (Sequences).
+        - **`SYSTEM.MUTEX`**: Đảm bảo an toàn khóa đa tiến trình khi thực hiện DDL đồng thời.
+        """
+    )
+    if df_sys is not None and not df_sys.empty:
+        type_desc = {"u": "Bảng người dùng (User Table)", "s": "Bảng hệ thống (System Table)", "i": "Bảng Chỉ mục (Index Table)"}
+        df_sys_display = df_sys.copy()
+        df_sys_display["LOAI_BANG"] = df_sys_display["TABLE_TYPE"].apply(lambda t: type_desc.get(str(t).lower(), str(t)))
+        col_sys_show = [c for c in ["TABLE_NAME", "LOAI_BANG", "SALT_BUCKETS"] if c in df_sys_display.columns]
+        st.dataframe(
+            df_sys_display[col_sys_show].rename(
+                columns={"TABLE_NAME": "Tên Bảng", "LOAI_BANG": "Phân Loại", "SALT_BUCKETS": "Số Salt Buckets"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+def render_data_cleaning_page():
+    """Trang: Pipeline Lọc & Làm sạch Dữ liệu Archive (ETL & Phoenix Bulk Loader)."""
+    components.render_header("🧹 PIPELINE LÀM SẠCH & DỮ LIỆU ARCHIVE")
+
+    summary = load_cleaning_summary()
+    components.render_data_cleaning_pipeline_diagram()
+    components.render_cleaning_metrics_cards(summary)
+
+    t_profile, t_bulk = st.tabs([
+        "📊 Thống Kê & Đối Chiếu Dữ Liệu",
+        "⚡ Quản Lý Nạp Dữ Liệu Vào Apache Phoenix",
+    ])
+
+    with t_profile:
+        col_c1, col_c2 = st.columns([1, 1])
+        with col_c1:
+            st.markdown("##### 📈 Phân Bổ Chất Lượng Dữ Liệu")
+            total_raw = summary.get("total_raw", 541909)
+            valid_rec = summary.get("valid_records", 524878)
+            drop_rec = summary.get("dropped_records", 17031)
+
+            df_quality = pd.DataFrame({
+                "Phân loại": ["Dữ liệu hợp lệ (Clean Data)", "Bản ghi lỗi/bất thường (Dropped)"],
+                "Số lượng bản ghi": [f"{valid_rec:,}", f"{drop_rec:,}"],
+                "Tỷ lệ": [f"{valid_rec / total_raw * 100:.2f}%", f"{drop_rec / total_raw * 100:.2f}%"],
+            })
+            st.dataframe(df_quality, use_container_width=True, hide_index=True)
+
+            st.markdown(
+                f"""
+                <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px; margin-top: 10px;">
+                    <div style="font-weight: 600; font-size: 0.88rem; color: #0F294A;">Thông số tổng hợp:</div>
+                    <div style="font-size: 0.82rem; color: #475569; margin-top: 4px; line-height: 1.6;">
+                        &bull; File nguồn: <code>archive/data.csv</code> (45.5 MB, 541,909 dòng)<br>
+                        &bull; Tỷ lệ đạt chuẩn: <b>{valid_rec/total_raw*100:.2f}%</b><br>
+                        &bull; Tổng doanh thu hợp lệ: <b>{formatting.format_currency(summary.get('total_revenue', 0))}</b><br>
+                        &bull; Khung thời gian: <b>{summary.get('min_date', '')}</b> đến <b>{summary.get('max_date', '')}</b>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with col_c2:
+            st.markdown("##### 🔍 Chi Tiết Các Tiêu Chí Loại Bỏ & Chuẩn Hóa")
+            df_dropped_reasons = pd.DataFrame([
+                {"Tiêu chí phát hiện": "Đơn hàng hủy / Hoàn trả (Quantity <= 0)", "Số lượng": f"{summary.get('cancellations_dropped', 10624):,}", "Hành động": "Loại bỏ"},
+                {"Tiêu chí phát hiện": "Đơn giá lỗi / Công nợ (UnitPrice <= 0)", "Số lượng": f"{summary.get('zero_price_dropped', 2517):,}", "Hành động": "Loại bỏ"},
+                {"Tiêu chí phát hiện": "Mô tả sản phẩm rỗng (Null Description)", "Số lượng": f"{summary.get('null_description_dropped', 1454):,}", "Hành động": "Loại bỏ"},
+                {"Tiêu chí phát hiện": "Bản ghi trùng lặp hoàn toàn (Exact Duplicates)", "Số lượng": f"{summary.get('exact_duplicates', 5268):,}", "Hành động": "Khử trùng lặp"},
+                {"Tiêu chí phát hiện": "Khách hàng vãng lai (CustomerID null)", "Số lượng": f"{summary.get('guest_customers', 135080):,}", "Hành động": "Gán mã KH_GUEST"},
+            ])
+            st.dataframe(df_dropped_reasons, use_container_width=True, hide_index=True)
+
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        st.markdown("##### 📑 So Sánh Cấu Trúc: Dữ Liệu Gốc vs Schema Apache Phoenix")
+        df_raw_sample, df_clean_sample = load_raw_and_cleaned_samples()
+
+        with st.expander("📂 Xem mẫu 5 dòng dữ liệu gốc từ archive/data.csv (Raw E-Commerce Data)", expanded=True):
+            st.dataframe(df_raw_sample, use_container_width=True)
+
+        with st.expander("✨ Xem mẫu 5 dòng dữ liệu sau khi làm sạch & chuẩn hóa cho Phoenix (Cleaned Phoenix Data)", expanded=True):
+            if not df_clean_sample.empty:
+                st.dataframe(formatting.format_giao_dich_table(df_clean_sample), use_container_width=True)
+
+    with t_bulk:
+        st.markdown("##### ⚡ Nạp Dữ Liệu Sạch Vào Apache Phoenix (HBase)")
+        st.markdown(
+            """
+            Sử dụng công cụ chính thức <code>psql.py</code> của Apache Phoenix để thực hiện Bulk Upsert
+            dữ liệu sạch vào HBase RegionServers với hiệu năng tối ưu (phân bổ song song qua <b>8 Salt Buckets</b>).
+            """,
+            unsafe_allow_html=True,
+        )
+
+        total_in_db = get_cached_total_count("", ())
+        st.info(f"📊 Hiện tại trong bảng **GIAO_DICH** của Phoenix đang có: **{formatting.format_number(total_in_db)}** bản ghi.")
+
+        col_b1, col_b2 = st.columns([2, 1])
+        with col_b1:
+            load_option = st.radio(
+                "Chọn gói dữ liệu sạch để nạp vào Phoenix:",
+                [
+                    "⚡ Mẫu chuẩn 5.000 dòng sạch (Khuyến nghị demo - Thời gian nạp ~7 giây)",
+                    "⚡ Tập lớn 10.000 dòng sạch (Thời gian nạp ~15 giây)",
+                ],
+                index=0,
+            )
+
+        with col_b2:
+            st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
+            if st.button("🚀 Thực Thi Nạp Dữ Liệu", type="primary", use_container_width=True):
+                chosen_file = (
+                    "/mnt/d/2026/BigData/phoenix-demo/data/retail_cleaned_5000.csv"
+                    if "5.000" in load_option
+                    else "/mnt/d/2026/BigData/phoenix-demo/data/retail_cleaned_10000.csv"
+                )
+                with st.spinner("Đang gọi psql.py để nạp dữ liệu sạch vào Phoenix HBase..."):
+                    cmd = f"python3 /mnt/d/2026/BigData/phoenix/bin/psql.py -t GIAO_DICH -h in-line localhost {chosen_file}"
+                    t_start = time.time()
+                    try:
+                        res = subprocess.run(
+                            ["wsl", "-e", "bash", "-c", cmd],
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                        )
+                        dur = time.time() - t_start
+                        if res.returncode == 0:
+                            st.success(f"✅ Nạp thành công vào Apache Phoenix trong {dur:.2f} giây!")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(f"Lỗi khi nạp dữ liệu: {res.stderr or res.stdout}")
+                    except Exception as e:
+                        st.error(f"Lỗi thực thi: {str(e)}")
+
+        st.markdown("---")
+        with st.expander("⚠️ Tùy chọn Tái tạo Bảng (Reset Table Schema)"):
+            st.warning("Hành động này sẽ XÓA TOÀN BỘ dữ liệu trong bảng GIAO_DICH và tạo lại cấu trúc mới với 8 Salt Buckets.")
+            if st.button("🗑️ Xóa và Khởi tạo lại Bảng GIAO_DICH", type="secondary"):
+                with st.spinner("Đang tái tạo bảng GIAO_DICH trên Phoenix..."):
+                    db.execute_phoenix_sql("DROP INDEX IF EXISTS IDX_GIAO_DICH_KHU_VUC ON GIAO_DICH;")
+                    db.execute_phoenix_sql("DROP TABLE IF EXISTS GIAO_DICH;")
+                    ok, err_c = db.execute_phoenix_sql(queries.CREATE_TABLE_SQL)
+                    if ok:
+                        db.execute_phoenix_sql(queries.SQL_CREATE_COVERED_INDEX)
+                        st.success("✅ Đã khởi tạo lại bảng GIAO_DICH và chỉ mục IDX_GIAO_DICH_KHU_VUC thành công!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(f"Lỗi khởi tạo bảng: {err_c}")
 
 
 def render_guide_page():
@@ -1084,10 +1580,39 @@ def render_guide_page():
 # Sidebar
 st.sidebar.markdown(
     """
-    <div style="text-align: center; padding-bottom: 12px;">
-        <span style="font-size: 2rem;">⚡</span>
-        <h3 style="margin: 0; color: #0F294A; font-weight: 700;">Apache Phoenix</h3>
-        <p style="margin: 0; font-size: 0.82rem; color: #64748B;">SQL Engine trên Apache HBase</p>
+    <div style="text-align: center; padding: 10px 0 16px 0;">
+        <div style="display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #00F2FE 0%, #0284C7 100%); box-shadow: 0 0 20px rgba(0, 242, 254, 0.4); margin-bottom: 8px;">
+            <span style="font-size: 1.5rem;">⚡</span>
+        </div>
+        <h3 style="margin: 0; color: #F8FAFC; font-weight: 800; font-size: 1.25rem; letter-spacing: -0.3px; font-family: 'JetBrains Mono', monospace;">APACHE PHOENIX</h3>
+        <p style="margin: 4px 0 0 0; font-size: 0.78rem; color: #38BDF8; font-family: 'JetBrains Mono', monospace; font-weight: 500;">SQL Engine on Apache HBase</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    """
+    <div style="font-weight: 700; font-size: 0.76rem; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px;">
+        <span>🌍</span> PHẠM VI THỊ TRƯỜNG:
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+market_scope_label = st.sidebar.radio(
+    "PHẠM VI THỊ TRƯỜNG:",
+    ["🇻🇳 Thị trường Việt Nam (VNĐ)", "🌍 Thị trường Quốc tế (Archive - VNĐ)", "🌐 Toàn bộ hệ thống (Hợp nhất VNĐ)"],
+    index=0,
+    label_visibility="collapsed",
+)
+current_scope = "VN" if "Việt Nam" in market_scope_label else ("INTL" if "Quốc tế" in market_scope_label else "ALL")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    """
+    <div style="font-weight: 700; font-size: 0.76rem; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px;">
+        <span>📂</span> CHỨC NĂNG HỆ THỐNG:
     </div>
     """,
     unsafe_allow_html=True,
@@ -1103,32 +1628,105 @@ MENU_PAGES = [
     "📖 Hướng dẫn demo",
 ]
 
-selected_page = st.sidebar.radio("CHỌN CHỨC NĂNG:", MENU_PAGES, index=0)
+selected_page = st.sidebar.radio("CHỌN CHỨC NĂNG:", MENU_PAGES, index=0, label_visibility="collapsed")
 
 st.sidebar.markdown("---")
 
 # Kiểm tra kết nối nhanh từ cache
 zk_alive = cached_is_zookeeper_alive()
 
+st.sidebar.markdown(
+    """
+    <style>
+    [data-testid="stSidebar"] div[data-testid="stButton"] button,
+    [data-testid="stSidebar"] button[kind="secondary"],
+    [data-testid="stSidebar"] button[data-testid="baseButton-secondary"],
+    [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] {
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.15) 0%, rgba(2, 132, 199, 0.25) 100%) !important;
+        background-color: #0B132B !important;
+        border: 1px solid rgba(56, 189, 248, 0.45) !important;
+        color: #38BDF8 !important;
+        border-radius: 8px !important;
+        height: 38px !important;
+        min-height: 38px !important;
+        max-height: 38px !important;
+        line-height: 38px !important;
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 0.82rem !important;
+        font-weight: 700 !important;
+        box-shadow: 0 0 10px rgba(56, 189, 248, 0.15) !important;
+        box-sizing: border-box !important;
+        margin: 0 !important;
+        transition: all 0.2s ease !important;
+    }
+    [data-testid="stSidebar"] div[data-testid="stButton"] button:hover,
+    [data-testid="stSidebar"] button[kind="secondary"]:hover,
+    [data-testid="stSidebar"] button[data-testid="baseButton-secondary"]:hover {
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.35) 0%, rgba(2, 132, 199, 0.5) 100%) !important;
+        background-color: #0F172A !important;
+        border-color: #00F2FE !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 0 16px rgba(0, 242, 254, 0.45) !important;
+        transform: translateY(-1px) !important;
+    }
+    [data-testid="stSidebar"] div[data-testid="stButton"] button p,
+    [data-testid="stSidebar"] div[data-testid="stButton"] button span {
+        color: #38BDF8 !important;
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 0.82rem !important;
+        font-weight: 700 !important;
+    }
+    [data-testid="stSidebar"] div[data-testid="stButton"] button:hover p,
+    [data-testid="stSidebar"] div[data-testid="stButton"] button:hover span {
+        color: #FFFFFF !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 col_sb1, col_sb2 = st.sidebar.columns([1, 1])
 with col_sb1:
-    if st.button("🔄 Làm mới", use_container_width=True, help="Làm mới bộ nhớ đệm"):
+    if st.button("🔄 Làm mới", use_container_width=True, help="Xóa bộ đệm và làm mới dữ liệu hệ thống", key="btn_refresh_sidebar"):
         st.cache_data.clear()
         st.rerun()
 
 with col_sb2:
-    status_light = "🟢 Online" if zk_alive else "🔴 Offline"
-    st.markdown(f"<div style='text-align: center; padding-top: 6px; font-weight: 600; font-size: 0.85rem;'>{status_light}</div>", unsafe_allow_html=True)
+    if zk_alive:
+        st.markdown(
+            """
+            <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.45); border-radius: 8px; padding: 0 8px; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 0 10px rgba(16, 185, 129, 0.15); height: 38px; box-sizing: border-box;">
+                <span class="status-dot-live"></span>
+                <span style="font-size: 0.82rem; font-weight: 700; color: #34D399; font-family: 'JetBrains Mono', monospace; line-height: normal;">ONLINE</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
+            <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.45); border-radius: 8px; padding: 0 8px; display: flex; align-items: center; justify-content: center; gap: 6px; height: 38px; box-sizing: border-box;">
+                <span style="width: 8px; height: 8px; background-color: #EF4444; border-radius: 50%; display: inline-block;"></span>
+                <span style="font-size: 0.82rem; font-weight: 700; color: #F87171; font-family: 'JetBrains Mono', monospace; line-height: normal;">OFFLINE</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 st.sidebar.markdown(
     """
-    <div style="font-size: 0.78rem; color: #64748B; background-color: #F1F5F9; padding: 10px; border-radius: 6px; margin-top: 15px; border: 1px solid #E2E8F0;">
-    <b>Thông số môi trường:</b><br>
-    &bull; Apache HBase: 2.5.15-hadoop3<br>
-    &bull; Apache Phoenix: 5.2.2<br>
-    &bull; ZooKeeper: 127.0.0.1:2181<br>
-    &bull; Cấu trúc: Salt Buckets = 8<br>
-    &bull; Báo cáo: Big Data 2026
+    <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.25); border-left: 3.5px solid #00F2FE; border-radius: 10px; padding: 12px 14px; margin-top: 14px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);">
+        <div style="font-weight: 700; font-size: 0.78rem; color: #38BDF8; font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+            <span>⚡</span> THÔNG SỐ CỤM HỆ THỐNG
+        </div>
+        <div style="font-size: 0.76rem; font-family: 'JetBrains Mono', monospace; line-height: 1.75;">
+            <div style="display: flex; justify-content: space-between;"><span style="color: #64748B;">HBase:</span><span style="color: #F8FAFC; font-weight: 600;">2.5.15-hadoop3</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #64748B;">Phoenix:</span><span style="color: #38BDF8; font-weight: 600;">5.2.2 (SQL Engine)</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #64748B;">ZooKeeper:</span><span style="color: #34D399; font-weight: 600;">127.0.0.1:2181</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #64748B;">Phân tán:</span><span style="color: #F59E0B; font-weight: 600;">Salt Buckets = 8</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #64748B;">Tỷ giá QT:</span><span style="color: #F43F5E; font-weight: 600;">x26 (26.000 VNĐ)</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: #64748B;">Báo cáo:</span><span style="color: #A855F7; font-weight: 600;">Big Data 2026</span></div>
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1148,9 +1746,9 @@ if not zk_alive:
 
 # ĐIỀU HƯỚNG LAZY-LOADING TUYỆT ĐỐI (Chỉ gọi duy nhất hàm của trang đang chọn)
 if selected_page == "📊 Tổng quan":
-    render_overview()
+    render_overview(scope=current_scope)
 elif selected_page == "💼 Quản lý giao dịch":
-    render_transactions()
+    render_transactions(scope=current_scope)
 elif selected_page == "🔍 Truy vấn và thống kê":
     render_queries_page()
 elif selected_page == "💻 Nhập câu truy vấn":

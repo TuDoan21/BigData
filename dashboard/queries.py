@@ -14,7 +14,7 @@ INDEX_NAME = "IDX_GIAO_DICH_KHU_VUC"
 
 # Schema chuẩn cho bảng GIAO_DICH với Salt Buckets = 8
 CREATE_TABLE_SQL = """
-CREATE TABLE GIAO_DICH (
+CREATE TABLE IF NOT EXISTS GIAO_DICH (
     MA_GIAO_DICH VARCHAR NOT NULL,
     MA_KHACH_HANG VARCHAR,
     MA_SAN_PHAM VARCHAR,
@@ -79,25 +79,69 @@ LIMIT 10;
 """.strip()
 
 
-def get_super_batch_overview_sql() -> list[str]:
+def get_super_batch_overview_sql(scope: str = "ALL") -> list[str]:
     """
     Trả về toàn bộ 6 câu truy vấn của trang Tổng quan để chạy trong ĐÚNG 1 phiên SQLLine.
-    Bao gồm:
-    0: Kiểm tra số lượng bản ghi
-    1: Kiểm tra Index
-    2: 5 KPI Cards
-    3: Biểu đồ theo khu vực
-    4: Biểu đồ theo thời gian
-    5: Top 10 giao dịch mới nhất
+    Hỗ trợ tách biệt:
+    - 'VN': Thị trường Việt Nam (MIEN_BAC, MIEN_TRUNG, MIEN_NAM)
+    - 'INTL': Thị trường Quốc tế (Archive Dataset - E-Commerce)
+    - 'ALL': Toàn bộ dữ liệu
     """
-    return [
-        SQL_OVERVIEW_CHECK_TABLE,
-        SQL_OVERVIEW_CHECK_INDEXES,
-        SQL_OVERVIEW_KPI,
-        SQL_OVERVIEW_CHART_REGION,
-        SQL_OVERVIEW_TIMELINE,
-        SQL_OVERVIEW_TOP10,
-    ]
+    where_clause = ""
+    if scope == "VN":
+        where_clause = "WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')"
+    elif scope == "INTL":
+        where_clause = "WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')"
+
+    chk_table = f"SELECT COUNT(*) AS TONG_SO FROM GIAO_DICH {where_clause};".strip()
+    chk_indexes = SQL_OVERVIEW_CHECK_INDEXES
+
+    kpi = f"""
+SELECT 
+    COUNT(*) AS TONG_GIAO_DICH,
+    COUNT(DISTINCT MA_KHACH_HANG) AS TONG_KHACH_HANG,
+    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU,
+    AVG(SO_LUONG * DON_GIA) AS GIA_TRI_TRUNG_BINH,
+    COUNT(DISTINCT KHU_VUC) AS SO_KHU_VUC
+FROM GIAO_DICH {where_clause};
+""".strip()
+
+    chart_region = f"""
+SELECT 
+    KHU_VUC,
+    COUNT(*) AS SO_GIAO_DICH,
+    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU
+FROM GIAO_DICH {where_clause}
+GROUP BY KHU_VUC
+ORDER BY TONG_DOANH_THU DESC
+LIMIT 10;
+""".strip()
+
+    timeline = f"""
+SELECT 
+    TO_CHAR(THOI_GIAN, 'yyyy-MM-dd') AS NGAY_GIAO_DICH,
+    COUNT(*) AS SO_GIAO_DICH,
+    SUM(SO_LUONG * DON_GIA) AS DOANH_THU_NGAY
+FROM GIAO_DICH {where_clause}
+GROUP BY TO_CHAR(THOI_GIAN, 'yyyy-MM-dd')
+ORDER BY NGAY_GIAO_DICH ASC;
+""".strip()
+
+    top10 = f"""
+SELECT 
+    MA_GIAO_DICH,
+    MA_KHACH_HANG,
+    MA_SAN_PHAM,
+    KHU_VUC,
+    SO_LUONG,
+    DON_GIA,
+    THOI_GIAN
+FROM GIAO_DICH {where_clause}
+ORDER BY THOI_GIAN DESC
+LIMIT 10;
+""".strip()
+
+    return [chk_table, chk_indexes, kpi, chart_region, timeline, top10]
 
 
 # =============================================================================
@@ -111,27 +155,27 @@ def build_transaction_list_query(
     sort_order: str = "ASC",
     limit: int = 20,
     offset: int = 0,
+    market_scope: str = "ALL",
 ) -> str:
     """
     Sinh câu lệnh SQL tìm kiếm và phân trang trực tiếp trên database.
-    Mặc định 20 bản ghi mỗi trang theo yêu cầu.
+    Hỗ trợ lọc theo phạm vi thị trường: 'VN', 'INTL', hoặc 'ALL'.
     """
     conditions = []
 
+    if market_scope == "VN":
+        conditions.append("KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')")
+    elif market_scope == "INTL":
+        conditions.append("KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')")
+
     if search_keyword and search_keyword.strip():
         kw = search_keyword.strip().replace("'", "")
-        if kw.upper().startswith("GD"):
-            conditions.append(f"MA_GIAO_DICH = '{kw}'")
-        elif kw.upper().startswith("KH"):
-            conditions.append(f"MA_KHACH_HANG = '{kw}'")
-        else:
-            conditions.append(f"(MA_GIAO_DICH = '{kw}' OR MA_KHACH_HANG = '{kw}')")
+        conditions.append(f"(MA_GIAO_DICH = '{kw}' OR MA_KHACH_HANG = '{kw}' OR MA_SAN_PHAM = '{kw}')")
 
-    valid_regions = {"MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG"}
     if khu_vuc_list:
-        filtered_regions = [r for r in khu_vuc_list if r in valid_regions]
-        if filtered_regions and len(filtered_regions) < len(valid_regions):
-            in_clause = ", ".join(f"'{r}'" for r in filtered_regions)
+        clean_regions = [r.strip().replace("'", "") for r in khu_vuc_list if r and str(r).strip() and str(r).strip() != "Tất cả"]
+        if clean_regions:
+            in_clause = ", ".join(f"'{r}'" for r in clean_regions)
             conditions.append(f"KHU_VUC IN ({in_clause})")
 
     where_clause = f"\nWHERE {' AND '.join(conditions)}" if conditions else ""
@@ -170,24 +214,24 @@ LIMIT {safe_limit}{offset_clause};
 def build_count_transactions_query(
     search_keyword: str = "",
     khu_vuc_list: tuple[str, ...] | list[str] | None = None,
+    market_scope: str = "ALL",
 ) -> str:
-    """Đếm tổng số bản ghi thỏa mãn điều kiện lọc để tính tổng số trang."""
+    """Đếm tổng số bản ghi thỏa mãn điều kiện lọc và thị trường để tính tổng số trang."""
     conditions = []
+
+    if market_scope == "VN":
+        conditions.append("KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')")
+    elif market_scope == "INTL":
+        conditions.append("KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')")
 
     if search_keyword and search_keyword.strip():
         kw = search_keyword.strip().replace("'", "")
-        if kw.upper().startswith("GD"):
-            conditions.append(f"MA_GIAO_DICH = '{kw}'")
-        elif kw.upper().startswith("KH"):
-            conditions.append(f"MA_KHACH_HANG = '{kw}'")
-        else:
-            conditions.append(f"(MA_GIAO_DICH = '{kw}' OR MA_KHACH_HANG = '{kw}')")
+        conditions.append(f"(MA_GIAO_DICH = '{kw}' OR MA_KHACH_HANG = '{kw}' OR MA_SAN_PHAM = '{kw}')")
 
-    valid_regions = {"MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG"}
     if khu_vuc_list:
-        filtered_regions = [r for r in khu_vuc_list if r in valid_regions]
-        if filtered_regions and len(filtered_regions) < len(valid_regions):
-            in_clause = ", ".join(f"'{r}'" for r in filtered_regions)
+        clean_regions = [r.strip().replace("'", "") for r in khu_vuc_list if r and str(r).strip() and str(r).strip() != "Tất cả"]
+        if clean_regions:
+            in_clause = ", ".join(f"'{r}'" for r in clean_regions)
             conditions.append(f"KHU_VUC IN ({in_clause})")
 
     where_clause = f"\nWHERE {' AND '.join(conditions)}" if conditions else ""
@@ -231,7 +275,7 @@ def sql_upsert_transaction(
     don_gia: float,
     thoi_gian: str,
 ) -> str:
-    """Tạo câu lệnh UPSERT INTO kèm COMMIT tự động."""
+    """Tạo câu lệnh UPSERT INTO chuẩn ANSI Phoenix SQL (tự động commit qua kết nối)."""
     c_id = ma_giao_dich.strip().replace("'", "")
     c_kh = ma_khach_hang.strip().replace("'", "")
     c_sp = ma_san_pham.strip().replace("'", "")
@@ -258,39 +302,35 @@ UPSERT INTO GIAO_DICH (
     {c_price:.2f},
     TO_TIMESTAMP('{c_time}', 'yyyy-MM-dd HH:mm:ss')
 );
-!commit;
 """.strip()
 
 
 def sql_delete_transaction(ma_giao_dich: str) -> str:
-    """Tạo câu lệnh DELETE kèm COMMIT."""
+    """Tạo câu lệnh DELETE chuẩn Phoenix SQL."""
     clean_id = ma_giao_dich.strip().replace("'", "")
-    return f"""
-DELETE FROM GIAO_DICH 
-WHERE MA_GIAO_DICH = '{clean_id}';
-!commit;
-""".strip()
+    return f"DELETE FROM GIAO_DICH WHERE MA_GIAO_DICH = '{clean_id}';"
 
 
 # =============================================================================
-# 4. DANH MỤC 10 TRUY VẤN DEMO BÁO CÁO (QUERIES & STATISTICS)
+# 4. DANH MỤC 10 TRUY VẤN DEMO BÁO CÁO (TÁCH BIỆT VN & QUỐC TẾ)
 # =============================================================================
 
-DEMO_QUERIES = [
+SAMPLE_QUERIES_VN = [
     {
         "id": 1,
-        "title": "1. Truy vấn danh sách dữ liệu (Hiển thị dữ liệu mẫu)",
-        "purpose": "Quét và lấy 20 bản ghi đầu tiên trong bảng GIAO_DICH để kiểm tra cấu trúc các cột dữ liệu.",
+        "title": "1. Danh sách 20 giao dịch thị trường Việt Nam",
+        "purpose": "Quét và lấy 20 bản ghi đầu tiên phát sinh tại thị trường nội địa (MIEN_BAC, MIEN_TRUNG, MIEN_NAM).",
         "sql": """
 SELECT MA_GIAO_DICH, MA_KHACH_HANG, MA_SAN_PHAM, KHU_VUC, SO_LUONG, DON_GIA, THOI_GIAN
 FROM GIAO_DICH
+WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
 LIMIT 20;
 """.strip(),
     },
     {
         "id": 2,
-        "title": "2. Lọc dữ liệu theo khu vực (Filter by Region)",
-        "purpose": "Lọc các giao dịch phát sinh tại chi nhánh MIEN_NAM để phục vụ thống kê vùng miền.",
+        "title": "2. Lọc giao dịch chi nhánh MIEN_NAM",
+        "purpose": "Lọc các giao dịch phát sinh tại chi nhánh MIEN_NAM với đơn giá tiền Việt (VNĐ).",
         "sql": """
 SELECT MA_GIAO_DICH, MA_KHACH_HANG, MA_SAN_PHAM, KHU_VUC, SO_LUONG, DON_GIA
 FROM GIAO_DICH
@@ -299,71 +339,76 @@ WHERE KHU_VUC = 'MIEN_NAM';
     },
     {
         "id": 3,
-        "title": "3. Lọc theo khoảng thời gian (Date-range Filtering)",
-        "purpose": "Sử dụng toán tử BETWEEN và hàm TO_TIMESTAMP để lọc các giao dịch trong khoảng đầu tháng 03/2026.",
+        "title": "3. Lọc theo khoảng thời gian đầu năm 2026 (Quý 1)",
+        "purpose": "Sử dụng toán tử BETWEEN và hàm TO_TIMESTAMP để lọc giao dịch nội địa quý 1 năm 2026.",
         "sql": """
 SELECT MA_GIAO_DICH, MA_KHACH_HANG, KHU_VUC, THOI_GIAN
 FROM GIAO_DICH
-WHERE THOI_GIAN BETWEEN TO_TIMESTAMP('2026-03-01 00:00:00', 'yyyy-MM-dd HH:mm:ss')
-                    AND TO_TIMESTAMP('2026-03-04 23:59:59', 'yyyy-MM-dd HH:mm:ss');
+WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
+  AND THOI_GIAN BETWEEN TO_TIMESTAMP('2026-01-01 00:00:00', 'yyyy-MM-dd HH:mm:ss')
+                    AND TO_TIMESTAMP('2026-03-31 23:59:59', 'yyyy-MM-dd HH:mm:ss')
+LIMIT 50;
 """.strip(),
     },
     {
         "id": 4,
-        "title": "4. Tìm kiếm theo mã khách hàng (Customer Point Search)",
-        "purpose": "Tra cứu lịch sử mua sắm và chi tiêu của khách hàng cụ thể (ví dụ: KH01).",
+        "title": "4. Tìm kiếm theo mã khách hàng nội địa (KH01 / KH016)",
+        "purpose": "Tra cứu lịch sử mua sắm và chi tiêu của khách hàng nội địa cụ thể.",
         "sql": """
 SELECT MA_GIAO_DICH, MA_SAN_PHAM, KHU_VUC, SO_LUONG, DON_GIA, THOI_GIAN
 FROM GIAO_DICH
-WHERE MA_KHACH_HANG = 'KH01';
+WHERE MA_KHACH_HANG IN ('KH01', 'KH016', 'KH001', 'KH029');
 """.strip(),
     },
     {
         "id": 5,
-        "title": "5. Tính tổng doanh thu toàn hệ thống (Total Revenue KPI)",
-        "purpose": "Tính toán tổng doanh thu, số lượng bán ra và giá trị trung bình trên toàn bộ dữ liệu.",
+        "title": "5. Tổng doanh thu toàn thị trường Việt Nam (VNĐ)",
+        "purpose": "Tính toán tổng doanh thu, số lượng sản phẩm bán ra của 3 miền Việt Nam.",
         "sql": """
 SELECT 
     COUNT(*) AS TONG_SO_GD,
     SUM(SO_LUONG) AS TONG_SAN_PHAM,
-    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU,
-    AVG(SO_LUONG * DON_GIA) AS DOANH_THU_TRUNG_BINH
-FROM GIAO_DICH;
+    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU_VND,
+    AVG(SO_LUONG * DON_GIA) AS DOANH_THU_TRUNG_BINH_VND
+FROM GIAO_DICH
+WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM');
 """.strip(),
     },
     {
         "id": 6,
-        "title": "6. Thống kê theo khu vực (Group By Region)",
-        "purpose": "Gom nhóm dữ liệu theo từng khu vực để so sánh tổng doanh thu và sản lượng bán ra.",
+        "title": "6. Thống kê doanh thu theo 3 miền (Group By Vùng Miền)",
+        "purpose": "Gom nhóm dữ liệu theo từng miền để so sánh tổng doanh thu và sản lượng bán ra.",
         "sql": """
 SELECT 
     KHU_VUC,
     COUNT(*) AS SO_GIAO_DICH,
     SUM(SO_LUONG) AS TONG_SAN_PHAM,
-    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU
+    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU_VND
 FROM GIAO_DICH
+WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
 GROUP BY KHU_VUC
-ORDER BY TONG_DOANH_THU DESC;
+ORDER BY TONG_DOANH_THU_VND DESC;
 """.strip(),
     },
     {
         "id": 7,
-        "title": "7. Thống kê theo sản phẩm (Top Selling Products)",
-        "purpose": "Tìm ra danh sách 5 sản phẩm bán chạy nhất tính theo tổng số lượng bán ra.",
+        "title": "7. Thống kê sản phẩm bán chạy nhất Việt Nam (SP01 - SP08)",
+        "purpose": "Tìm ra danh sách các mặt hàng thiết bị công nghệ có sản lượng bán cao nhất.",
         "sql": """
 SELECT 
     MA_SAN_PHAM, 
-    SUM(SO_LUONG) AS TONG_SO_LUONG_BAN
+    SUM(SO_LUONG) AS TONG_SO_LUONG_BAN,
+    SUM(SO_LUONG * DON_GIA) AS DOANH_THU_SAN_PHAM
 FROM GIAO_DICH
+WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
 GROUP BY MA_SAN_PHAM
-ORDER BY TONG_SO_LUONG_BAN DESC
-LIMIT 5;
+ORDER BY TONG_SO_LUONG_BAN DESC;
 """.strip(),
     },
     {
         "id": 8,
-        "title": "8. Sắp xếp và giới hạn kết quả (Order By & Limit Top Values)",
-        "purpose": "Tính thành tiền (SO_LUONG * DON_GIA) và trích xuất 5 giao dịch có giá trị đơn hàng lớn nhất.",
+        "title": "8. Top 5 giao dịch có giá trị đơn hàng lớn nhất (VNĐ)",
+        "purpose": "Tính thành tiền (SO_LUONG * DON_GIA) và trích xuất 5 giao dịch quy mô lớn nhất.",
         "sql": """
 SELECT 
     MA_GIAO_DICH,
@@ -372,31 +417,33 @@ SELECT
     KHU_VUC,
     SO_LUONG,
     DON_GIA,
-    SO_LUONG * DON_GIA AS THANH_TIEN
+    SO_LUONG * DON_GIA AS THANH_TIEN_VND
 FROM GIAO_DICH
-ORDER BY THANH_TIEN DESC
+WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
+ORDER BY THANH_TIEN_VND DESC
 LIMIT 5;
 """.strip(),
     },
     {
         "id": 9,
-        "title": "9. Truy vấn nhóm với GROUP BY & HAVING (High Revenue Regions)",
-        "purpose": "Lọc các khu vực có doanh thu vượt mức ngưỡng 100.000.000 VNĐ bằng mệnh đề HAVING.",
+        "title": "9. Lọc khu vực có doanh thu vượt 100 triệu VNĐ (HAVING)",
+        "purpose": "Lọc các vùng có doanh thu đạt chỉ tiêu lớn bằng mệnh đề HAVING.",
         "sql": """
 SELECT 
     KHU_VUC,
     COUNT(*) AS SO_GIAO_DICH,
-    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU
+    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU_VND
 FROM GIAO_DICH
+WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
 GROUP BY KHU_VUC
 HAVING SUM(SO_LUONG * DON_GIA) > 100000000.00
-ORDER BY TONG_DOANH_THU DESC;
+ORDER BY TONG_DOANH_THU_VND DESC;
 """.strip(),
     },
     {
         "id": 10,
-        "title": "10. Truy vấn kiểm tra trước và sau khi tạo Index (EXPLAIN Plan)",
-        "purpose": "Phân tích kế hoạch thực thi để chứng minh Phoenix chuyển đổi từ Full Scan sang Range Scan khi có Index.",
+        "title": "10. Kế hoạch thực thi EXPLAIN Plan trên vùng MIEN_NAM",
+        "purpose": "Phân tích kế hoạch thực thi để chứng minh Phoenix sử dụng Index Range Scan cho dữ liệu nội địa.",
         "sql": """
 EXPLAIN
 SELECT MA_GIAO_DICH, KHU_VUC, SO_LUONG, DON_GIA
@@ -405,6 +452,150 @@ WHERE KHU_VUC = 'MIEN_NAM';
 """.strip(),
     },
 ]
+
+SAMPLE_QUERIES_INTL = [
+    {
+        "id": 1,
+        "title": "1. Danh sách 20 giao dịch bán lẻ quốc tế (Online Retail)",
+        "purpose": "Quét và lấy 20 bản ghi đầu tiên trong tập dữ liệu e-commerce quốc tế từ archive/data.csv.",
+        "sql": """
+SELECT MA_GIAO_DICH, MA_KHACH_HANG, MA_SAN_PHAM, KHU_VUC, SO_LUONG, DON_GIA, THOI_GIAN
+FROM GIAO_DICH
+WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
+LIMIT 20;
+""".strip(),
+    },
+    {
+        "id": 2,
+        "title": "2. Lọc đơn hàng tại thị trường United Kingdom",
+        "purpose": "Lọc các giao dịch phát sinh tại thị trường bán lẻ chính United Kingdom.",
+        "sql": """
+SELECT MA_GIAO_DICH, MA_KHACH_HANG, MA_SAN_PHAM, KHU_VUC, SO_LUONG, DON_GIA
+FROM GIAO_DICH
+WHERE KHU_VUC = 'United Kingdom'
+LIMIT 50;
+""".strip(),
+    },
+    {
+        "id": 3,
+        "title": "3. Lọc theo tuần lễ bán hàng đầu tiên (Tháng 12/2010)",
+        "purpose": "Sử dụng toán tử BETWEEN để lọc các giao dịch trong tuần đầu tiên từ ngày 01/12/2010.",
+        "sql": """
+SELECT MA_GIAO_DICH, MA_KHACH_HANG, KHU_VUC, SO_LUONG, DON_GIA, THOI_GIAN
+FROM GIAO_DICH
+WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
+  AND THOI_GIAN BETWEEN TO_TIMESTAMP('2010-12-01 00:00:00', 'yyyy-MM-dd HH:mm:ss')
+                    AND TO_TIMESTAMP('2010-12-07 23:59:59', 'yyyy-MM-dd HH:mm:ss')
+LIMIT 50;
+""".strip(),
+    },
+    {
+        "id": 4,
+        "title": "4. Tra cứu lịch sử khách hàng quốc tế VIP (KH_17850)",
+        "purpose": "Truy vấn điểm (Point Lookup) toàn bộ các mặt hàng được mua bởi khách hàng thường xuyên KH_17850.",
+        "sql": """
+SELECT MA_GIAO_DICH, MA_SAN_PHAM, KHU_VUC, SO_LUONG, DON_GIA, THOI_GIAN
+FROM GIAO_DICH
+WHERE MA_KHACH_HANG = 'KH_17850'
+LIMIT 50;
+""".strip(),
+    },
+    {
+        "id": 5,
+        "title": "5. Tổng doanh thu bán lẻ thương mại quốc tế (VNĐ)",
+        "purpose": "Tổng hợp doanh số, sản lượng và giá trị trung bình mỗi dòng đơn hàng quốc tế theo tiền Việt Nam.",
+        "sql": """
+SELECT 
+    COUNT(*) AS TONG_SO_GD,
+    SUM(SO_LUONG) AS TONG_SAN_PHAM,
+    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU_VND,
+    AVG(SO_LUONG * DON_GIA) AS GIA_TRI_TRUNG_BINH_VND
+FROM GIAO_DICH
+WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM');
+""".strip(),
+    },
+    {
+        "id": 6,
+        "title": "6. Doanh thu theo từng quốc gia (Top Markets)",
+        "purpose": "Gom nhóm theo quốc gia để xếp hạng các thị trường xuất khẩu / mua sắm nhiều nhất.",
+        "sql": """
+SELECT 
+    KHU_VUC,
+    COUNT(*) AS SO_GIAO_DICH,
+    SUM(SO_LUONG) AS TONG_SAN_PHAM,
+    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU_VND
+FROM GIAO_DICH
+WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
+GROUP BY KHU_VUC
+ORDER BY TONG_DOANH_THU_VND DESC;
+""".strip(),
+    },
+    {
+        "id": 7,
+        "title": "7. Top 10 mã sản phẩm bán chạy nhất quốc tế (StockCode)",
+        "purpose": "Tìm ra 10 mã hàng hóa được đặt mua với số lượng lớn nhất.",
+        "sql": """
+SELECT 
+    MA_SAN_PHAM, 
+    SUM(SO_LUONG) AS TONG_SO_LUONG_BAN,
+    COUNT(*) AS SO_LAN_DAT_HANG
+FROM GIAO_DICH
+WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
+GROUP BY MA_SAN_PHAM
+ORDER BY TONG_SO_LUONG_BAN DESC
+LIMIT 10;
+""".strip(),
+    },
+    {
+        "id": 8,
+        "title": "8. Top 10 đơn hàng giá trị cao nhất (VNĐ)",
+        "purpose": "Trích xuất 10 dòng giao dịch bán buôn / bán lẻ có thành tiền cao nhất (VNĐ).",
+        "sql": """
+SELECT 
+    MA_GIAO_DICH,
+    MA_KHACH_HANG,
+    MA_SAN_PHAM,
+    KHU_VUC,
+    SO_LUONG,
+    DON_GIA,
+    SO_LUONG * DON_GIA AS THANH_TIEN_VND
+FROM GIAO_DICH
+WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
+ORDER BY THANH_TIEN_VND DESC
+LIMIT 10;
+""".strip(),
+    },
+    {
+        "id": 9,
+        "title": "9. Lọc các quốc gia có doanh số trên 50 triệu VNĐ (HAVING)",
+        "purpose": "Phân khúc thị trường tiềm năng có doanh thu đạt ngưỡng lớn bằng mệnh đề HAVING.",
+        "sql": """
+SELECT 
+    KHU_VUC,
+    COUNT(*) AS SO_GIAO_DICH,
+    SUM(SO_LUONG * DON_GIA) AS TONG_DOANH_THU_VND
+FROM GIAO_DICH
+WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')
+GROUP BY KHU_VUC
+HAVING SUM(SO_LUONG * DON_GIA) > 50000000.00
+ORDER BY TONG_DOANH_THU_VND DESC;
+""".strip(),
+    },
+    {
+        "id": 10,
+        "title": "10. Kế hoạch thực thi EXPLAIN Plan trên tập dữ liệu quốc tế",
+        "purpose": "Đối chiếu việc sử dụng Covered Secondary Index trên tập dữ liệu 5.000 dòng quốc tế.",
+        "sql": """
+EXPLAIN
+SELECT MA_GIAO_DICH, KHU_VUC, SO_LUONG, DON_GIA
+FROM GIAO_DICH
+WHERE KHU_VUC = 'United Kingdom';
+""".strip(),
+    },
+]
+
+DEMO_QUERIES = SAMPLE_QUERIES_VN
+SAMPLE_QUERIES = SAMPLE_QUERIES_VN
 
 
 # =============================================================================
@@ -419,7 +610,7 @@ SELECT /*+ NO_INDEX */
     SO_LUONG,
     DON_GIA
 FROM GIAO_DICH
-WHERE KHU_VUC = 'MIEN_NAM';
+WHERE KHU_VUC = 'United Kingdom';
 """.strip()
 
 SQL_CREATE_COVERED_INDEX = """
@@ -446,14 +637,14 @@ SELECT /*+ INDEX(GIAO_DICH IDX_GIAO_DICH_KHU_VUC) */
     SO_LUONG,
     DON_GIA
 FROM GIAO_DICH
-WHERE KHU_VUC = 'MIEN_NAM';
+WHERE KHU_VUC = 'United Kingdom';
 """.strip()
 
 SQL_BENCHMARK_NO_INDEX = """
 SELECT /*+ NO_INDEX */
     MA_GIAO_DICH, KHU_VUC, SO_LUONG, DON_GIA, THOI_GIAN
 FROM GIAO_DICH
-WHERE KHU_VUC = 'MIEN_NAM'
+WHERE KHU_VUC = 'United Kingdom'
 LIMIT 20;
 """.strip()
 
@@ -461,10 +652,35 @@ SQL_BENCHMARK_WITH_INDEX = """
 SELECT /*+ INDEX(GIAO_DICH IDX_GIAO_DICH_KHU_VUC) */
     MA_GIAO_DICH, KHU_VUC, SO_LUONG, DON_GIA, THOI_GIAN
 FROM GIAO_DICH
-WHERE KHU_VUC = 'MIEN_NAM'
+WHERE KHU_VUC = 'United Kingdom'
 LIMIT 20;
 """.strip()
 
 SQL_BENCHMARK_POINT_LOOKUP = """
-SELECT * FROM GIAO_DICH WHERE MA_GIAO_DICH = 'GD001';
+SELECT * FROM GIAO_DICH WHERE MA_GIAO_DICH = 'TX_0000200';
 """.strip()
+
+# =============================================================================
+# 6. TRUY VẤN METADATA SYSTEM.CATALOG (PHOENIX SYSTEM CATALOG)
+# =============================================================================
+
+SQL_METADATA_COLUMNS = """
+SELECT COLUMN_NAME, DATA_TYPE, COLUMN_SIZE, NULLABLE, ORDINAL_POSITION, KEY_SEQ
+FROM SYSTEM.CATALOG
+WHERE TABLE_NAME = 'GIAO_DICH' AND COLUMN_NAME IS NOT NULL
+ORDER BY ORDINAL_POSITION;
+""".strip()
+
+SQL_METADATA_TABLE_PROPERTIES = """
+SELECT TABLE_NAME, TABLE_TYPE, SALT_BUCKETS, COLUMN_COUNT, PK_NAME
+FROM SYSTEM.CATALOG
+WHERE TABLE_NAME = 'GIAO_DICH' AND COLUMN_NAME IS NULL;
+""".strip()
+
+SQL_METADATA_SYSTEM_TABLES = """
+SELECT TABLE_NAME, TABLE_TYPE, SALT_BUCKETS
+FROM SYSTEM.CATALOG
+WHERE COLUMN_NAME IS NULL
+ORDER BY TABLE_TYPE, TABLE_NAME;
+""".strip()
+

@@ -1,0 +1,16 @@
+{
+    "total_raw": 541909,
+    "valid_records": 524878,
+    "dropped_records": 17031,
+    "cancellations_dropped": 10624,
+    "zero_price_dropped": 2517,
+    "null_description_dropped": 1454,
+    "guest_customers": 135080,
+    "exact_duplicates": 5268,
+    "unique_countries": 38,
+    "unique_products": 3922,
+    "unique_customers": 4339,
+    "min_date": "2010-12-01 08:26:00",
+    "max_date": "2011-12-09 12:50:00",
+    "total_revenue": 276694880904.0
+}

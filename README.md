@@ -286,44 +286,180 @@ SELECT COUNT(*) FROM GIAO_DICH;
 
 ---
 
-## 12. Cách chạy Dashboard giám sát (Tối ưu hóa & 8 Trang Lazy Loading)
+## 12. Hướng dẫn toàn diện cách chạy và sử dụng Dashboard Apache Phoenix
 
-Dashboard được xây dựng trên nền tảng **Streamlit**, truy vấn **100% dữ liệu thật** từ Phoenix/HBase, tích hợp cơ chế cache có kiểm soát `@st.cache_data(ttl=30)` và pre-check socket tránh treo ứng dụng.
-
-### Các lệnh thực thi chính xác trên Ubuntu WSL:
-```bash
-cd /mnt/d/2026/BigData/phoenix-demo/dashboard
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-Ứng dụng sẽ mở trên trình duyệt tại địa chỉ: `http://localhost:8501`.
-
-**Cấu trúc 6 trang chức năng theo kịch bản demo môn Big Data:**
-1. **📊 Tổng quan**: 4 thẻ KPI đồng nhất (Tổng số giao dịch, Tổng doanh thu, Giá trị giao dịch TB, Số khu vực), biểu đồ phân bổ doanh thu/giao dịch theo khu vực và danh sách 10 giao dịch gần nhất.
-2. **🔍 Truy vấn dữ liệu**: Bộ lọc động (Row Key, Khu vực, Khoảng đơn giá, Sắp xếp theo đơn giá/thành tiền) trong form an toàn, tùy chọn phân trang (10, 20, 50, 100 dòng) và hiển thị rõ câu lệnh SQL.
-3. **💼 Quản lý giao dịch**: Tích hợp 3 chức năng DML trong 3 tab duy nhất:
-   - **➕ Thêm giao dịch**: Form nhập liệu, kiểm tra trùng lặp Row Key chống ghi đè nhầm, thực hiện `UPSERT INTO` và `COMMIT`.
-   - **✏️ Cập nhật giao dịch**: Tìm theo Row Key, nạp dữ liệu cũ vào form, cập nhật bằng `UPSERT` và hiển thị so sánh trước/sau khi sửa.
-   - **🗑️ Xóa giao dịch**: Tìm kiếm Row Key, hiển thị bản ghi đối soát, checkbox xác nhận an toàn trước khi bấm nút đỏ `DELETE FROM` và `COMMIT`.
-4. **📈 Thống kê**: 3 nhóm báo cáo gom nhóm chuyên sâu (Theo khu vực, Top 5 sản phẩm bán chạy nhất, Top 5 khách hàng VIP) kèm biểu đồ trực quan.
-5. **⚡ Index và EXPLAIN**: Quản trị Secondary Covered Index `IDX_GIAO_DICH_KHU_VUC` (tạo với mệnh đề `INCLUDE`, xóa an toàn, chạy `EXPLAIN` so sánh Full Table Scan vs Range Scan, và thử nghiệm ép `Index Hint`).
-6. **🖥️ Trạng thái hệ thống**: Giám sát sức khỏe thời gian thực (ZooKeeper port 2181, tiến trình HMaster, kết nối Phoenix, bảng `GIAO_DICH`, trạng thái Index) cùng nút kiểm tra lại.
+Dashboard được xây dựng trên nền tảng **Streamlit**, kết nối **100% dữ liệu thật** tới cụm Apache Phoenix / HBase thông qua kiến trúc **Persistent SQLLine JVM Bridge** tốc độ cao (< 100ms/truy vấn). Giao diện tối ưu theo chuẩn báo cáo học phần Big Data với đầy đủ 10 phân hệ nghiệp vụ, biểu đồ phân tích và công cụ quản trị.
 
 ---
 
-## 13. Cách dừng Dashboard
+### 12.1. Điều kiện tiên quyết trước khi chạy Dashboard
+Trước khi khởi động Dashboard, đảm bảo cụm HBase và ZooKeeper đang ở trạng thái hoạt động:
+1. **Kiểm tra cổng ZooKeeper 2181 và tiến trình HMaster:**
+   ```bash
+   jps
+   ```
+   *Kết quả phải có tiến trình `HMaster`.*
 
-Tại terminal đang chạy Streamlit, nhấn tổ hợp phím:
+2. **Nếu HBase chưa chạy, khởi động ngay bằng lệnh:**
+   ```bash
+   export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+   bash /mnt/d/2026/BigData/phoenix-demo/scripts/start_services.sh
+   ```
+   *Hoặc gọi trực tiếp: `/mnt/d/2026/BigData/hbase/bin/start-hbase.sh`*
+
+---
+
+### 12.2. Các cách khởi chạy Dashboard
+
+#### Cách 1: Chạy trực tiếp từ Ubuntu WSL (Khuyên dùng khi demo)
+Mở cửa sổ dòng lệnh Terminal Ubuntu WSL và thực thi chuỗi lệnh:
+
+```bash
+# 1. Điều hướng vào thư mục dự án
+cd /mnt/d/2026/BigData/phoenix-demo
+
+# 2. Kích hoạt môi trường ảo Python
+source .venv/bin/activate
+
+# 3. Khởi chạy ứng dụng Streamlit trên cổng 8501
+streamlit run dashboard/app.py --server.headless true --server.port 8501
+```
+
+#### Cách 2: Chạy từ Windows PowerShell (Không cần mở WSL thủ công)
+Mở PowerShell tại máy Windows và chạy lệnh một dòng:
+
+```powershell
+wsl bash -c "cd /mnt/d/2026/BigData/phoenix-demo && source .venv/bin/activate && streamlit run dashboard/app.py --server.headless true --server.port 8501"
+```
+
+#### Cách 3: Chạy ở chế độ nền (Background Daemon)
+Nếu muốn Dashboard chạy liên tục ngầm không bị đóng khi tắt cửa sổ Terminal:
+
+```bash
+cd /mnt/d/2026/BigData/phoenix-demo
+source .venv/bin/activate
+nohup streamlit run dashboard/app.py --server.headless true --server.port 8501 > streamlit.log 2>&1 &
+```
+
+---
+
+### 12.3. Truy cập giao diện ứng dụng
+Mở trình duyệt web bất kỳ (Chrome, Edge, Firefox) và truy cập vào địa chỉ:
+- **`http://localhost:8501`** (hoặc `http://127.0.0.1:8501`)
+
+---
+
+### 12.4. Cấu trúc và hướng dẫn sử dụng 10 Trang chức năng của Dashboard
+
+#### 1. 📊 Tổng Quan Hệ Thống (System Overview & Super-Batch)
+- **Thanh trạng thái hạ tầng đồng bộ (Status Bar):** Giám sát trạng thái thời gian thực của 6 thành phần:
+  * `🟢 ZooKeeper: 2181 Online`
+  * `🟢 HBase HMaster: Active`
+  * `🟢 Phoenix SQLLine: Connected`
+  * `🟢 Bảng GIAO_DICH (Số lượng dòng hiện có)`
+  * `🟢 Covered Index: Active`
+  * `⚡ Salt Buckets: 8 Regions`
+- **Bộ lọc thị trường linh hoạt (Sidebar):** Chuyển đổi tức thì phạm vi báo cáo giữa:
+  * `🇻🇳 Thị trường Việt Nam (VNĐ)`: Đơn vị tiền tệ VNĐ, 3 vùng miền (`MIEN_BAC`, `MIEN_TRUNG`, `MIEN_NAM`), danh mục `SP01` - `SP08`.
+  * `🌍 Thị trường Quốc tế (Archive - $)`: Đơn vị tiền tệ USD, các quốc gia Châu Âu từ tập `Online Retail` (`United Kingdom`, `Germany`, `France`...).
+  * `🌐 Toàn bộ hệ thống`: Chế độ xem gộp toàn diện 5,125 bản ghi.
+- **5 Thẻ KPI chuẩn Dashboard doanh nghiệp:** Tổng số giao dịch (`COUNT`), Tổng khách hàng (`COUNT DISTINCT`), Tổng doanh thu (`SUM`), Giá trị trung bình/đơn (`AVG`), Số thị trường/quốc gia.
+- **2 Biểu đồ phân tích trực quan:** Biểu đồ cột phân bổ doanh thu theo vùng miền và biểu đồ đường chuỗi thời gian doanh thu ngày.
+- **Top 10 giao dịch gần nhất:** Bảng đối soát các đơn hàng mới nhất phát sinh trên hệ thống.
+- **Nút khởi tạo bảng nhanh:** Nếu bảng chưa tồn tại, trang cung cấp sẵn nút bấm `🔨 Khởi tạo Bảng GIAO_DICH (Salt Buckets = 8)` để tạo bảng chỉ với 1 click.
+
+#### 2. 💼 Quản Lý Giao Dịch (CRUD & Database Pagination)
+- **Phân trang chuẩn Database:** Sử dụng `LIMIT 20 OFFSET ...` trên Phoenix, cam kết tải trang siêu tốc (< 60ms), không bao giờ kéo toàn bộ 5,000+ dòng lên RAM trình duyệt.
+- **Bộ lọc tìm kiếm đa năng:** Tìm nhanh theo RowKey (`GD001`, `TX_0000001`), mã khách hàng (`KH01`, `KH_17850`), mã sản phẩm (`SP01`, `85123A`) và đa chọn khu vực/quốc gia.
+- **Tab ➕ Thêm Giao Dịch Mới:** Nhập liệu form, tự động kiểm tra chống trùng khóa chính (`Primary Key`), ghi dữ liệu bằng lệnh `UPSERT INTO ... VALUES (...)` và tự động `COMMIT`.
+- **Tab ✏️ Sửa Giao Dịch:** Chọn mã từ danh sách hiện tại hoặc nhập mã bất kỳ, tự động đổ dữ liệu cũ vào form, cho phép cập nhật đơn giá, số lượng, khu vực qua cơ chế `UPSERT` nguyên tử.
+- **Tab 🗑️ Xóa Giao Dịch:** Nhập mã cần xóa, hệ thống hiển thị chi tiết đơn hàng để người dùng đối soát, bấm xác nhận để thực thi `DELETE FROM GIAO_DICH WHERE MA_GIAO_DICH = '...'`.
+
+#### 3. 🔍 Truy Vấn Và Thống Kê (20 Demo Queries Chuẩn Mực)
+Trang được phân chia rõ ràng làm 2 Tab chuyên biệt với 20 câu truy vấn thực tế:
+- **Tab 🇻🇳 10 Truy Vấn Thị Trường Việt Nam:**
+  1. Danh sách 20 giao dịch nội địa
+  2. Lọc đơn hàng chi nhánh `MIEN_NAM`
+  3. Lọc theo khoảng thời gian Quý 1/2026 (`BETWEEN ... AND`)
+  4. Tra cứu lịch sử khách hàng `KH01` / `KH016`
+  5. Thống kê tổng doanh thu toàn thị trường (VNĐ)
+  6. Gom nhóm doanh thu theo 3 miền (`GROUP BY KHU_VUC`)
+  7. Top sản phẩm bán chạy nhất Việt Nam (`SP01` - `SP08`)
+  8. Top 5 đơn hàng giá trị cao nhất
+  9. Lọc khu vực đạt doanh số trên 100 triệu VNĐ (`HAVING`)
+  10. Xem kế hoạch thực thi `EXPLAIN Plan` trên vùng `MIEN_NAM`
+- **Tab 🌍 10 Truy Vấn Thị Trường Quốc Tế (Archive - Online Retail):**
+  1. Danh sách 20 giao dịch bán lẻ thương mại điện tử
+  2. Lọc đơn hàng thị trường `United Kingdom`
+  3. Lọc doanh số tuần đầu tiên tháng 12/2010
+  4. Tra cứu khách hàng VIP `KH_17850`
+  5. Thống kê tổng doanh thu bán lẻ quốc tế ($)
+  6. Thống kê doanh thu theo từng quốc gia (`Top Markets`)
+  7. Top 10 mã sản phẩm bán chạy nhất quốc tế (`StockCode`)
+  8. Top 10 đơn hàng giá trị cao nhất thị trường quốc tế
+  9. Lọc các quốc gia có doanh số trên $1,000 (`HAVING`)
+  10. Xem kế hoạch thực thi `EXPLAIN Plan` trên tập dữ liệu quốc tế
+- **Thực thi 1-Click:** Mỗi câu truy vấn đều có nút "Chạy câu này", hiển thị cú pháp SQL định dạng màu, kết quả DataFrame và giải thích ý nghĩa nghiệp vụ chuyên sâu.
+
+#### 4. 💻 Nhập Câu Truy Vấn (Interactive Phoenix SQL Console)
+- Cho phép người dùng hoặc giảng viên trực tiếp gõ bất kỳ câu lệnh SQL Phoenix ANSI nào (`SELECT`, `EXPLAIN`, `UPSERT`).
+- Tích hợp đo lường chính xác thời gian thực thi (mili-giây) và hiển thị kết quả trực tiếp dưới dạng bảng dữ liệu tương tác.
+
+#### 5. ⚡ Quản Lý Index & Kế Hoạch Thực Thi (EXPLAIN Plan)
+- **Quản trị Secondary Covered Index:** Nút bấm tạo / xóa chỉ mục `IDX_GIAO_DICH_KHU_VUC` kèm mệnh đề `INCLUDE (SO_LUONG, DON_GIA)`.
+- **Trực quan hóa EXPLAIN Pipeline:** So sánh trực quan sự khác biệt hiệu năng giữa:
+  * *Khi chưa có Index:* `PARALLEL 8-WAY FULL SCAN OVER GIAO_DICH` (quét toàn bộ bảng HBase).
+  * *Khi có Covered Index:* `PARALLEL 8-WAY RANGE SCAN OVER IDX_GIAO_DICH_KHU_VUC` (chỉ đọc đúng dải dữ liệu cần tìm mà không cần trỏ ngược về bảng chính).
+- **Thử nghiệm Index Hint:** Trực tiếp kiểm tra chỉ dẫn ép trình tối ưu hóa Phoenix sử dụng Index (`/*+ INDEX(GIAO_DICH IDX_GIAO_DICH_KHU_VUC) */`).
+
+#### 6. 🧹 Làm Sạch & Dữ Liệu Archive (ETL Pipeline)
+- **Quy trình ETL Big Data:** Trực quan hóa quy trình làm sạch từ tập dữ liệu thô gốc `archive/data.csv` (541,909 bản ghi) thành tập dữ liệu chuẩn mực `retail_cleaned_5000.csv`:
+  * Loại bỏ các mã đơn hàng hủy (`InvoiceNo` bắt đầu bằng `C`).
+  * Loại bỏ đơn hàng có đơn giá bằng 0 hoặc số lượng âm.
+  * Xử lý Missing Value của trường khách hàng (`CustomerID` rỗng gán nhãn `GUEST`).
+  * Chuẩn hóa định dạng thời gian `yyyy-MM-dd HH:mm:ss`.
+- **Công cụ nạp Bulk Loader `psql.py`:** Hướng dẫn lệnh nạp hàng nghìn dòng vào HBase chỉ trong 1-2 giây.
+
+#### 7. 🏛️ Kiến Trúc Hệ Thống & Salt Buckets = 8
+- **Sơ đồ phân tầng Phoenix - HBase:** Trực quan hóa cách Phoenix Client kết nối ZooKeeper, dịch ANSI SQL thành HBase Coprocessors và đẩy tính toán trực tiếp xuống các RegionServers chứa dữ liệu.
+- **Trực quan hóa 8 Salt Buckets:** Giải thích cơ chế chống hiện tượng nghẽn cổ chai ghi tuần tự (*Region Hotspotting*) bằng cách thêm 1 byte băm `(0x00 .. 0x07)` vào trước RowKey.
+- **Công cụ băm RowKey tương tác:** Nhập mã giao dịch bất kỳ (ví dụ: `GD001`, `TX_0000001`), hệ thống tính toán ngay mã Salt Bucket và hiển thị cấu trúc RowKey thực tế trên HBase.
+
+#### 8. 📚 SYSTEM.CATALOG & Siêu Dữ Liệu (Metadata Explorer)
+- Khám phá bảng siêu dữ liệu nội tại `SYSTEM.CATALOG` của Apache Phoenix.
+- Hiển thị đầy đủ Schema 7 cột của bảng `GIAO_DICH`, thứ tự cột, kiểu dữ liệu SQL và ràng buộc khóa chính.
+- Danh mục 29 bảng hệ thống của Phoenix quản lý hàm thống kê, chuỗi tuần tự (`SYSTEM.SEQUENCE`), chỉ mục và quyền hạn.
+
+#### 9. 🚀 Kiểm Tra Hiệu Năng (Latency Benchmark)
+- Thử nghiệm so sánh thời gian phản hồi: Kết nối thường trực Persistent JVM Bridge (< 60ms) so với khởi động tiến trình One-shot rời rạc (~3,000ms).
+
+#### 10. 📖 Hướng Dẫn Báo Cáo Demo (Presentation Guide)
+- Cung cấp checklist 6 bước trình bày mẫu dành cho nhóm sinh viên khi thuyết trình đồ án trước hội đồng giảng viên.
+
+---
+
+### 12.5. Cách dừng Dashboard
+Tại cửa sổ Terminal đang chạy ứng dụng Streamlit, nhấn tổ hợp phím:
 ```text
 Ctrl + C
 ```
-
-Nếu chạy trong môi trường ảo, thoát môi trường bằng:
+Hoặc nếu chạy ngầm dưới dạng background process, dừng bằng lệnh:
 ```bash
-deactivate
+pkill -f 'streamlit run dashboard/app.py'
 ```
+
+---
+
+### 12.6. Xử lý các tình huống thường gặp (Dashboard Troubleshooting)
+
+| Hiện tượng | Nguyên nhân | Cách xử lý |
+| :--- | :--- | :--- |
+| **Màn hình báo đỏ "Không thể kết nối cổng 2181"** | HBase và ZooKeeper chưa được bật trong WSL | Mở Terminal WSL và chạy `bash scripts/start_services.sh`, sau đó nhấn nút "Thử kết nối lại" trên web. |
+| **Huy hiệu hiển thị "Chưa tạo bảng"** | Bảng `GIAO_DICH` chưa khởi tạo trong Phoenix | Nhấn nút **"🔨 Khởi tạo Bảng GIAO_DICH"** ngay tại trang Tổng quan. |
+| **Số liệu chưa cập nhật sau khi nạp CSV từ terminal** | Streamlit lưu bộ nhớ cache `@st.cache_data` | Nhấn nút **"🔄 Làm mới"** trên thanh Sidebar bên trái để xóa cache và tải lại dữ liệu mới nhất. |
+| **Cổng 8501 bị chiếm dụng** | Một tiến trình Streamlit cũ vẫn đang chạy ngầm | Chạy lệnh `pkill -f streamlit` trong WSL rồi khởi chạy lại. |
+
+---
 
 ---
 

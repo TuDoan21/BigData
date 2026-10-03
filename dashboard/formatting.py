@@ -16,10 +16,11 @@ from typing import Any
 import pandas as pd
 
 
-def format_currency(val: Any, null_as_dash: bool = False) -> str:
+def format_currency(val: Any, null_as_dash: bool = False, symbol: str = "VNĐ") -> str:
     """
-    Định dạng số tiền theo chuẩn Việt Nam: '28.500.000 VNĐ'
-    Xử lý an toàn: None, NaN, Decimal, Float, chuỗi dạng khoa học (2.85E+7).
+    Định dạng số tiền thống nhất chuẩn quốc gia: Việt Nam Đồng (VNĐ).
+    Xử lý an toàn: None, NaN, Decimal, Float, chuỗi dạng số mũ khoa học (2.85E+7).
+    Ví dụ: 14500000 -> '14.500.000 VNĐ'.
     """
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return "—" if null_as_dash else "0 VNĐ"
@@ -38,6 +39,23 @@ def format_currency(val: Any, null_as_dash: bool = False) -> str:
         return f"{val_float:,.0f}".replace(",", ".") + " VNĐ"
     except (ValueError, TypeError, decimal.InvalidOperation):
         return "—" if null_as_dash else "0 VNĐ"
+
+
+def format_currency_compact(val: Any) -> str:
+    """Định dạng rút gọn công nghệ cao cho KPI: tỷ / triệu VNĐ."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "0 VNĐ"
+    try:
+        num = float(val)
+        abs_num = abs(num)
+        if abs_num >= 1_000_000_000:
+            return f"{num / 1_000_000_000:,.2f} tỷ VNĐ"
+        elif abs_num >= 1_000_000:
+            return f"{num / 1_000_000:,.1f} tr VNĐ"
+        else:
+            return f"{num:,.0f}".replace(",", ".") + " VNĐ"
+    except Exception:
+        return "0 VNĐ"
 
 
 def format_number(val: Any, null_as_dash: bool = False) -> str:
@@ -98,7 +116,7 @@ def format_null(val: Any) -> Any:
     return val
 
 
-def format_giao_dich_table(df: pd.DataFrame) -> pd.DataFrame:
+def format_giao_dich_table(df: pd.DataFrame, symbol: str = "VNĐ") -> pd.DataFrame:
     """
     Chuẩn bị DataFrame để hiển thị đẹp trên giao diện Streamlit:
     - Không làm thay đổi kiểu dữ liệu gốc của DataFrame đầu vào (tránh lỗi biểu đồ).
@@ -124,10 +142,10 @@ def format_giao_dich_table(df: pd.DataFrame) -> pd.DataFrame:
         df_display["SO_LUONG_HIEN_THI"] = df_display["SO_LUONG"].map(lambda x: format_number(x, null_as_dash=True))
 
     if "DON_GIA" in df_display.columns:
-        df_display["DON_GIA_HIEN_THI"] = df_display["DON_GIA"].map(lambda x: format_currency(x, null_as_dash=True))
+        df_display["DON_GIA_HIEN_THI"] = df_display["DON_GIA"].map(lambda x: format_currency(x, null_as_dash=True, symbol=symbol))
 
     if "THANH_TIEN" in df_display.columns:
-        df_display["THANH_TIEN_HIEN_THI"] = df_display["THANH_TIEN"].map(lambda x: format_currency(x, null_as_dash=True))
+        df_display["THANH_TIEN_HIEN_THI"] = df_display["THANH_TIEN"].map(lambda x: format_currency(x, null_as_dash=True, symbol=symbol))
 
     if "THOI_GIAN" in df_display.columns:
         df_display["THOI_GIAN_HIEN_THI"] = df_display["THOI_GIAN"].map(format_datetime)
