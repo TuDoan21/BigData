@@ -14,6 +14,11 @@ import os
 import random
 import sys
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -72,19 +77,39 @@ def generate_data(rows: int, seed: int, output_path: str, force: bool, include_h
         os.makedirs(parent_dir, exist_ok=True)
 
     # Dữ liệu danh mục tham chiếu
-    # Quy tắc mã giao dịch: bắt đầu từ GD_100001 để TUYỆT ĐỐI KHÔNG trùng lặp với GD001 -> GD999
-    START_ID = 100001
+    # Quy tắc mã giao dịch: chuẩn hóa tiền tố TX_ với 7 chữ số (TX_0000001, TX_0000002...)
+    # đồng bộ hoàn toàn với bộ dữ liệu quốc tế.
+    START_ID = 1
     REGIONS = ["MIEN_NAM", "MIEN_BAC", "MIEN_TRUNG"]
-    CUSTOMERS = [f"KH{i:03d}" for i in range(1, 101)]  # KH001 -> KH100
+    CUSTOMERS = [
+        "KH_17850", "KH_13047", "KH_12583", "KH_13748", "KH_15100",
+        "KH_15291", "KH_14688", "KH_17809", "KH_15311", "KH_16098",
+        "KH_18074", "KH_17420", "KH_16029", "KH_16250", "KH_12431",
+        "KH_17511", "KH_13705", "KH_13747", "KH_13408", "KH_13767",
+        "KH_17924", "KH_13448", "KH_15862", "KH_15513", "KH_12791",
+        "KH_16218", "KH_14045", "KH_14307", "KH_17908", "KH_17920",
+    ]
     PRODUCTS = [
-        {"id": "SP01", "name": "Laptop Dell Precision", "base_price": 25000000.00},
-        {"id": "SP02", "name": "MacBook Pro M3", "base_price": 32000000.00},
-        {"id": "SP03", "name": "Man hinh Dell Ultrasharp", "base_price": 8500000.00},
-        {"id": "SP04", "name": "Ban phim co Keychron", "base_price": 1850000.00},
-        {"id": "SP05", "name": "Chuot Logitech MX Master", "base_price": 1950000.00},
-        {"id": "SP06", "name": "Tai nghe Sony WH-1000XM5", "base_price": 6900000.00},
-        {"id": "SP07", "name": "O cung SSD Samsung 2TB", "base_price": 3500000.00},
-        {"id": "SP08", "name": "RAM DDR5 Kingston 32GB", "base_price": 2400000.00},
+        {"id": "85123A", "name": "White Hanging Heart T-Light Holder", "base_price": 75000.00},
+        {"id": "71053", "name": "White Metal Lantern", "base_price": 88000.00},
+        {"id": "84406B", "name": "Cream Cupidon Coat Hanger", "base_price": 72000.00},
+        {"id": "84029G", "name": "Knitted Union Flag Hot Water Bottle", "base_price": 98000.00},
+        {"id": "84029E", "name": "Red Woolly Hottie White Heart", "base_price": 97000.00},
+        {"id": "22752", "name": "Set 72 Colour Pencils Dolly Girl", "base_price": 205000.00},
+        {"id": "21730", "name": "Glass Star Frosted T-Light Holder", "base_price": 110000.00},
+        {"id": "22633", "name": "Hand Warmer Union Jack", "base_price": 51000.00},
+        {"id": "22632", "name": "Hand Warmer Red Retrospot", "base_price": 54000.00},
+        {"id": "84879", "name": "Assorted Colour Bird Ornament", "base_price": 44000.00},
+        {"id": "22745", "name": "Poppy's Playhouse Bedroom", "base_price": 55000.00},
+        {"id": "22748", "name": "Poppy's Playhouse Kitchen", "base_price": 55000.00},
+        {"id": "22749", "name": "Poppy's Playhouse Livingroom", "base_price": 98000.00},
+        {"id": "22310", "name": "Ivory Knit Dinosaur", "base_price": 43000.00},
+        {"id": "84969", "name": "Box Of 6 Assorted Colour Teaspoons", "base_price": 110000.00},
+        {"id": "22623", "name": "Box Of 6 Herb Markers", "base_price": 128000.00},
+        {"id": "22622", "name": "Box Of 24 Cocktail Parasols", "base_price": 258000.00},
+        {"id": "21754", "name": "Home Sweet Home Ceramic Hanger", "base_price": 154000.00},
+        {"id": "21755", "name": "Love Bird Hanger", "base_price": 154000.00},
+        {"id": "21777", "name": "Recipe Box With Metal Heart", "base_price": 206000.00},
     ]
 
     start_date = datetime.datetime(2026, 1, 1, 0, 0, 0)
@@ -110,7 +135,7 @@ def generate_data(rows: int, seed: int, output_path: str, force: bool, include_h
             ])
 
         for i in range(rows):
-            tx_id = f"GD_{START_ID + i}"
+            tx_id = f"TX_{START_ID + i:07d}"
             customer = random.choice(CUSTOMERS)
             prod = random.choice(PRODUCTS)
             region = random.choice(REGIONS)

@@ -10,22 +10,22 @@ FROM GIAO_DICH;
 -- 2. Tìm kiếm chính xác theo mã giao dịch (Truy vấn Point Lookup theo Row Key)
 SELECT * 
 FROM GIAO_DICH 
-WHERE MA_GIAO_DICH = 'GD001';
+WHERE MA_GIAO_DICH = 'TX_0000001';
 
 -- 3. Lọc theo khu vực (Ví dụ: MIEN_NAM)
 SELECT MA_GIAO_DICH, MA_KHACH_HANG, MA_SAN_PHAM, KHU_VUC, SO_LUONG, DON_GIA
 FROM GIAO_DICH
 WHERE KHU_VUC = 'MIEN_NAM';
 
--- 4. Lọc theo khách hàng cụ thể (Ví dụ: KH01)
+-- 4. Lọc theo khách hàng cụ thể (Ví dụ: KH_17850)
 SELECT MA_GIAO_DICH, MA_SAN_PHAM, KHU_VUC, SO_LUONG, DON_GIA, THOI_GIAN
 FROM GIAO_DICH
-WHERE MA_KHACH_HANG = 'KH01';
+WHERE MA_KHACH_HANG = 'KH_17850';
 
--- 5. Lọc theo sản phẩm (Ví dụ: SP02)
+-- 5. Lọc theo sản phẩm (Ví dụ: 71053)
 SELECT MA_GIAO_DICH, MA_KHACH_HANG, KHU_VUC, SO_LUONG, DON_GIA
 FROM GIAO_DICH
-WHERE MA_SAN_PHAM = 'SP02';
+WHERE MA_SAN_PHAM = '71053';
 
 -- 6. Lọc theo khoảng đơn giá từ 5.000.000 đến 20.000.000
 SELECT MA_GIAO_DICH, MA_SAN_PHAM, DON_GIA

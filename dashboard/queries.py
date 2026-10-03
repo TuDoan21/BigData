@@ -93,7 +93,7 @@ def get_super_batch_overview_sql(scope: str = "ALL") -> list[str]:
     elif scope == "INTL":
         where_clause = "WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')"
 
-    chk_table = f"SELECT COUNT(*) AS TONG_SO FROM GIAO_DICH {where_clause};".strip()
+    chk_table = f"SELECT 1 AS TONG_SO FROM GIAO_DICH {where_clause} LIMIT 1;".strip()
     chk_indexes = SQL_OVERVIEW_CHECK_INDEXES
 
     kpi = f"""
@@ -352,12 +352,12 @@ LIMIT 50;
     },
     {
         "id": 4,
-        "title": "4. Tìm kiếm theo mã khách hàng nội địa (KH01 / KH016)",
+        "title": "4. Tìm kiếm theo mã khách hàng nội địa (KH_17850 / KH_13047)",
         "purpose": "Tra cứu lịch sử mua sắm và chi tiêu của khách hàng nội địa cụ thể.",
         "sql": """
 SELECT MA_GIAO_DICH, MA_SAN_PHAM, KHU_VUC, SO_LUONG, DON_GIA, THOI_GIAN
 FROM GIAO_DICH
-WHERE MA_KHACH_HANG IN ('KH01', 'KH016', 'KH001', 'KH029');
+WHERE MA_KHACH_HANG IN ('KH_17850', 'KH_13047', 'KH_12583', 'KH_13748');
 """.strip(),
     },
     {
@@ -392,8 +392,8 @@ ORDER BY TONG_DOANH_THU_VND DESC;
     },
     {
         "id": 7,
-        "title": "7. Thống kê sản phẩm bán chạy nhất Việt Nam (SP01 - SP08)",
-        "purpose": "Tìm ra danh sách các mặt hàng thiết bị công nghệ có sản lượng bán cao nhất.",
+        "title": "7. Thống kê sản phẩm bán chạy nhất Việt Nam (85123A, 71053...)",
+        "purpose": "Tìm ra danh sách các mặt hàng có sản lượng bán cao nhất.",
         "sql": """
 SELECT 
     MA_SAN_PHAM, 

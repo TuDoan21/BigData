@@ -76,13 +76,9 @@ def load_cached_overview_super_batch(scope: str = "ALL") -> tuple[dict, pd.DataF
     if err:
         return sys_status, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), err
 
-    # 0: Đếm tổng số bản ghi
-    if len(dfs) > 0 and not dfs[0].empty and "TONG_SO" in dfs[0].columns:
+    # 0: Kiểm tra bảng tồn tại
+    if len(dfs) > 0 and not dfs[0].empty:
         sys_status["table_exists"] = True
-        try:
-            sys_status["record_count"] = int(float(dfs[0].iloc[0]["TONG_SO"]))
-        except Exception:
-            sys_status["record_count"] = 0
 
     # 1: Danh sách Index
     if len(dfs) > 1 and not dfs[1].empty and "INDEX_NAME" in dfs[1].columns:
@@ -93,6 +89,20 @@ def load_cached_overview_super_batch(scope: str = "ALL") -> tuple[dict, pd.DataF
     df_region = dfs[3] if len(dfs) > 3 else pd.DataFrame()
     df_timeline = dfs[4] if len(dfs) > 4 else pd.DataFrame()
     df_top10 = dfs[5] if len(dfs) > 5 else pd.DataFrame()
+
+    # Đếm tổng số bản ghi trực tiếp từ df_kpi (TONG_GIAO_DICH = COUNT(*)), loại bỏ scan trùng lặp
+    if df_kpi is not None and not df_kpi.empty and "TONG_GIAO_DICH" in df_kpi.columns:
+        sys_status["table_exists"] = True
+        try:
+            sys_status["record_count"] = int(float(df_kpi.iloc[0]["TONG_GIAO_DICH"]))
+        except Exception:
+            sys_status["record_count"] = 0
+    elif len(dfs) > 0 and not dfs[0].empty and "TONG_SO" in dfs[0].columns:
+        sys_status["table_exists"] = True
+        try:
+            sys_status["record_count"] = int(float(dfs[0].iloc[0]["TONG_SO"]))
+        except Exception:
+            sys_status["record_count"] = 0
 
     return sys_status, df_kpi, df_region, df_timeline, df_top10, None
 
@@ -170,19 +180,17 @@ def load_cached_transaction_keys() -> list[str]:
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_cached_regions(scope: str = "ALL") -> list[str]:
     """Lấy danh sách các thị trường/quốc gia thực tế từ CSDL theo phạm vi thị trường."""
-    where = ""
     if scope == "VN":
-        where = "WHERE KHU_VUC IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')"
-    elif scope == "INTL":
-        where = "WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')"
+        return ["MIEN_BAC", "MIEN_TRUNG", "MIEN_NAM"]
 
+    where = "WHERE KHU_VUC NOT IN ('MIEN_BAC', 'MIEN_TRUNG', 'MIEN_NAM')" if scope == "INTL" else ""
     sql = f"SELECT DISTINCT KHU_VUC FROM GIAO_DICH {where} ORDER BY KHU_VUC;"
     df, err = db.query_phoenix_df(sql, timeout=10)
     if df is not None and not df.empty and "KHU_VUC" in df.columns:
         res = [str(x).strip() for x in df["KHU_VUC"].dropna().unique() if str(x).strip()]
         if res:
             return res
-    return ["MIEN_BAC", "MIEN_TRUNG", "MIEN_NAM"] if scope == "VN" else ["United Kingdom", "Germany", "France", "EIRE", "Spain", "Netherlands"]
+    return ["United Kingdom", "Germany", "France", "EIRE", "Spain", "Netherlands"]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -293,6 +301,8 @@ def render_overview(scope: str = "ALL"):
         except (ValueError, TypeError, KeyError):
             pass
 
+    st.session_state[f"total_records_{scope}"] = total_tx
+
     curr_symbol = "VNĐ"
     components.render_kpi_cards(total_tx, total_cust, total_rev, avg_val, num_regions, symbol="VNĐ")
 
@@ -401,8 +411,11 @@ def render_transactions(scope: str = "ALL"):
     current_p = st.session_state["crud_page"]
     offset = (current_p - 1) * page_size
 
-    # Lấy tổng số dòng từ cache (không gọi lại COUNT(*) khi chuyển trang)
-    total_records = get_cached_total_count(active_kw, active_regions, market_scope=scope)
+    # Lấy tổng số dòng từ cache: Nếu không tìm kiếm và giữ nguyên tất cả khu vực, lấy tức thì từ Tổng quan (0 ms)
+    if not active_kw and (not active_regions or set(active_regions) >= set(available_regions)) and f"total_records_{scope}" in st.session_state:
+        total_records = st.session_state[f"total_records_{scope}"]
+    else:
+        total_records = get_cached_total_count(active_kw, active_regions, market_scope=scope)
     total_pages = max(1, (total_records + page_size - 1) // page_size)
 
     # Tải danh sách giao dịch trang hiện tại từ cache
@@ -547,8 +560,13 @@ def render_transactions(scope: str = "ALL"):
         target_edit_id = manual_edit_id.strip() if manual_edit_id.strip() else (selected_edit_id if not selected_edit_id.startswith("--") else "")
 
         if target_edit_id:
-            with st.spinner(f"Đang tải giao dịch {target_edit_id}..."):
-                df_curr, err_curr = load_cached_record_by_id(target_edit_id)
+            # Tối ưu hóa siêu tốc: Nếu mã giao dịch nằm ngay trong bảng trang hiện tại, lấy ngay từ bộ nhớ (0 ms)
+            if df_list is not None and not df_list.empty and "MA_GIAO_DICH" in df_list.columns and target_edit_id in df_list["MA_GIAO_DICH"].astype(str).values:
+                df_curr = df_list[df_list["MA_GIAO_DICH"].astype(str) == target_edit_id].copy()
+                err_curr = None
+            else:
+                with st.spinner(f"Đang tải giao dịch {target_edit_id}..."):
+                    df_curr, err_curr = load_cached_record_by_id(target_edit_id)
 
             if err_curr:
                 st.error(f"Lỗi: {err_curr}")
@@ -608,8 +626,13 @@ def render_transactions(scope: str = "ALL"):
         target_del_id = manual_del_id.strip() if manual_del_id.strip() else (selected_del_id if not selected_del_id.startswith("--") else "")
 
         if target_del_id:
-            with st.spinner(f"Đang kiểm tra {target_del_id}..."):
-                df_to_del, err_td = load_cached_record_by_id(target_del_id)
+            # Tối ưu hóa siêu tốc: Nếu mã giao dịch nằm ngay trong bảng trang hiện tại, lấy ngay từ bộ nhớ (0 ms)
+            if df_list is not None and not df_list.empty and "MA_GIAO_DICH" in df_list.columns and target_del_id in df_list["MA_GIAO_DICH"].astype(str).values:
+                df_to_del = df_list[df_list["MA_GIAO_DICH"].astype(str) == target_del_id].copy()
+                err_td = None
+            else:
+                with st.spinner(f"Đang kiểm tra {target_del_id}..."):
+                    df_to_del, err_td = load_cached_record_by_id(target_del_id)
 
             if err_td:
                 st.error(f"Lỗi: {err_td}")
@@ -737,7 +760,7 @@ SAMPLE_CONSOLE_QUERIES = {
     "4. Phân tích kế hoạch thực thi EXPLAIN": "EXPLAIN\nSELECT *\nFROM GIAO_DICH\nWHERE KHU_VUC = 'MIEN_NAM';",
     "5. Range Scan với Index Hint /*+ INDEX */": "SELECT /*+ INDEX(GIAO_DICH IDX_GIAO_DICH_KHU_VUC) */\n       MA_GIAO_DICH, KHU_VUC, SO_LUONG, DON_GIA\nFROM GIAO_DICH\nWHERE KHU_VUC = 'MIEN_NAM'\nLIMIT 10;",
     "6. Truy vấn Metadata bảng từ SYSTEM.CATALOG": "SELECT TABLE_NAME, TABLE_TYPE, SALT_BUCKETS, COLUMN_COUNT, PK_NAME\nFROM SYSTEM.CATALOG\nWHERE TABLE_TYPE = 'u';",
-    "7. Point Lookup trực tiếp theo Row Key (Siêu nhanh)": "SELECT * FROM GIAO_DICH WHERE MA_GIAO_DICH = 'GD001';",
+    "7. Point Lookup trực tiếp theo Row Key (Siêu nhanh)": "SELECT * FROM GIAO_DICH WHERE MA_GIAO_DICH = 'TX_0000001';",
 }
 
 
@@ -1159,7 +1182,7 @@ def render_benchmark_page():
         st.markdown(
             """
             **1. Vấn đề Region Hotspotting trong HBase:**
-            - Trong HBase truyền thống, Row Key tăng tuần tự (`GD001`, `GD002`...) sẽ khiến toàn bộ dữ liệu mới ghi tập trung vào một Region Server duy nhất.
+            - Trong HBase truyền thống, Row Key tăng tuần tự (`TX_0000001`, `TX_0000002`...) sẽ khiến toàn bộ dữ liệu mới ghi tập trung vào một Region Server duy nhất.
             - Gây thắt cổ chai (*Hotspotting*) và làm giảm hiệu năng ghi/đọc của cụm phân tán.
             """
         )
@@ -1225,7 +1248,7 @@ def render_salt_architecture_page():
         st.markdown("#### 🧂 Trực Quan Hóa Cơ Chế Salt Buckets = 8")
         st.markdown(
             """
-            Trong Apache HBase, nếu Row Key tăng tuần tự (`GD001`, `GD002`, `GD003`...), 
+            Trong Apache HBase, nếu Row Key tăng tuần tự (`TX_0000001`, `TX_0000002`, `TX_0000003`...), 
             toàn bộ dữ liệu mới sẽ dồn vào một Region Server duy nhất (*Region Hotspotting*). 
             **Giải pháp:** Phoenix tự động thêm 1 byte tiền tố băm `(0x00..0x07)` vào trước Row Key để chia đều dữ liệu vào **8 Salt Buckets**.
             """
@@ -1239,8 +1262,8 @@ def render_salt_architecture_page():
         with col_inp1:
             test_key = st.text_input(
                 "Nhập Mã Giao Dịch để kiểm tra bucket:",
-                value="GD001",
-                help="Nhập mã như GD001, GD002 hoặc bất kỳ chuỗi nào",
+                value="TX_0000001",
+                help="Nhập mã như TX_0000001, TX_0000002 hoặc bất kỳ chuỗi nào",
             ).strip().upper()
         
         calc_bucket = components.calculate_salt_bucket(test_key, 8) if test_key else 0
@@ -1523,10 +1546,10 @@ def render_guide_page():
             
             2. **Bước 2: Thao tác Quản lý Giao dịch (DML) (2 phút)**
                - Chuyển sang trang **💼 Quản lý giao dịch**.
-               - Demo **Tìm kiếm & Phân trang**: Gõ `GD001` hoặc chọn khu vực `MIEN_NAM`.
-               - Demo **Thêm mới**: Nhập mã `GD999`, điền thông tin, nhấn Lưu -> Bảng lập tức làm mới.
-               - Demo **Sửa**: Chọn mã `GD999`, sửa số lượng và đơn giá -> Khóa chính bị khóa không thể sửa, cập nhật thành công qua `UPSERT`.
-               - Demo **Xóa**: Chọn mã `GD999`, hộp thoại cảnh báo màu đỏ hiện rõ mã `GD999` -> Xác nhận xóa -> Bản ghi biến mất.
+               - Demo **Tìm kiếm & Phân trang**: Gõ `TX_0000001` hoặc chọn khu vực `MIEN_NAM`.
+               - Demo **Thêm mới**: Nhập mã `TX_9999999`, điền thông tin, nhấn Lưu -> Bảng lập tức làm mới.
+               - Demo **Sửa**: Chọn mã `TX_9999999`, sửa số lượng và đơn giá -> Khóa chính bị khóa không thể sửa, cập nhật thành công qua `UPSERT`.
+               - Demo **Xóa**: Chọn mã `TX_9999999`, hộp thoại cảnh báo màu đỏ hiện rõ mã `TX_9999999` -> Xác nhận xóa -> Bản ghi biến mất.
             
             3. **Bước 3: Demo các câu truy vấn phân tích & Console (2 phút)**
                - Mở trang **🔍 Truy vấn và thống kê**: Chạy các câu tiêu biểu: Câu 3 (thời gian), Câu 6 (`GROUP BY` khu vực), Câu 9 (`HAVING`).
@@ -1638,10 +1661,11 @@ zk_alive = cached_is_zookeeper_alive()
 st.sidebar.markdown(
     """
     <style>
+    [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button,
+    [data-testid="stSidebar"] [data-testid="column"] button,
+    [data-testid="stSidebar"] div.stButton button,
     [data-testid="stSidebar"] div[data-testid="stButton"] button,
-    [data-testid="stSidebar"] button[kind="secondary"],
-    [data-testid="stSidebar"] button[data-testid="baseButton-secondary"],
-    [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] {
+    [data-testid="stSidebar"] button[kind="secondary"] {
         background: linear-gradient(135deg, rgba(14, 165, 233, 0.15) 0%, rgba(2, 132, 199, 0.25) 100%) !important;
         background-color: #0B132B !important;
         border: 1px solid rgba(56, 189, 248, 0.45) !important;
@@ -1658,10 +1682,17 @@ st.sidebar.markdown(
         box-sizing: border-box !important;
         margin: 0 !important;
         transition: all 0.2s ease !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 6px !important;
+        width: 100% !important;
     }
+    [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover,
+    [data-testid="stSidebar"] [data-testid="column"] button:hover,
+    [data-testid="stSidebar"] div.stButton button:hover,
     [data-testid="stSidebar"] div[data-testid="stButton"] button:hover,
-    [data-testid="stSidebar"] button[kind="secondary"]:hover,
-    [data-testid="stSidebar"] button[data-testid="baseButton-secondary"]:hover {
+    [data-testid="stSidebar"] button[kind="secondary"]:hover {
         background: linear-gradient(135deg, rgba(14, 165, 233, 0.35) 0%, rgba(2, 132, 199, 0.5) 100%) !important;
         background-color: #0F172A !important;
         border-color: #00F2FE !important;
@@ -1669,13 +1700,27 @@ st.sidebar.markdown(
         box-shadow: 0 0 16px rgba(0, 242, 254, 0.45) !important;
         transform: translateY(-1px) !important;
     }
+    [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button p,
+    [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button span,
+    [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button div,
+    [data-testid="stSidebar"] [data-testid="column"] button p,
+    [data-testid="stSidebar"] [data-testid="column"] button span,
+    [data-testid="stSidebar"] div.stButton button p,
     [data-testid="stSidebar"] div[data-testid="stButton"] button p,
     [data-testid="stSidebar"] div[data-testid="stButton"] button span {
         color: #38BDF8 !important;
         font-family: 'JetBrains Mono', monospace !important;
         font-size: 0.82rem !important;
         font-weight: 700 !important;
+        background: transparent !important;
+        background-color: transparent !important;
     }
+    [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover p,
+    [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover span,
+    [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover div,
+    [data-testid="stSidebar"] [data-testid="column"] button:hover p,
+    [data-testid="stSidebar"] [data-testid="column"] button:hover span,
+    [data-testid="stSidebar"] div.stButton button:hover p,
     [data-testid="stSidebar"] div[data-testid="stButton"] button:hover p,
     [data-testid="stSidebar"] div[data-testid="stButton"] button:hover span {
         color: #FFFFFF !important;
@@ -1689,6 +1734,7 @@ col_sb1, col_sb2 = st.sidebar.columns([1, 1])
 with col_sb1:
     if st.button("🔄 Làm mới", use_container_width=True, help="Xóa bộ đệm và làm mới dữ liệu hệ thống", key="btn_refresh_sidebar"):
         st.cache_data.clear()
+        db.clear_db_cache()
         st.rerun()
 
 with col_sb2:

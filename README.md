@@ -241,7 +241,7 @@ WHERE KHU_VUC = 'MIEN_NAM';
 
 ## 10. Cách sinh dữ liệu lớn (`generate_large_data.py`)
 
-Công cụ Python cho phép sinh dữ liệu giả lập thực tế với mã giao dịch dạng `GD_100001` trở đi, đảm bảo không bao giờ trùng lặp với `GD001`–`GD999`.
+Công cụ Python cho phép sinh dữ liệu giả lập thực tế với mã giao dịch chuẩn hóa tiền tố `TX_` gồm 7 chữ số (`TX_0000001` trở đi), đồng bộ hoàn toàn với cấu trúc tập dữ liệu e-commerce quốc tế.
 
 ### Mặc định (Sinh 1.000 dòng):
 ```bash
@@ -370,7 +370,7 @@ Mở trình duyệt web bất kỳ (Chrome, Edge, Firefox) và truy cập vào �
 
 #### 2. 💼 Quản Lý Giao Dịch (CRUD & Database Pagination)
 - **Phân trang chuẩn Database:** Sử dụng `LIMIT 20 OFFSET ...` trên Phoenix, cam kết tải trang siêu tốc (< 60ms), không bao giờ kéo toàn bộ 5,000+ dòng lên RAM trình duyệt.
-- **Bộ lọc tìm kiếm đa năng:** Tìm nhanh theo RowKey (`GD001`, `TX_0000001`), mã khách hàng (`KH01`, `KH_17850`), mã sản phẩm (`SP01`, `85123A`) và đa chọn khu vực/quốc gia.
+- **Bộ lọc tìm kiếm đa năng:** Tìm nhanh theo RowKey (`TX_0000001`, `TX_0000002`), mã khách hàng (`KH_17850`, `KH_13047`), mã sản phẩm (`85123A`, `71053`) và đa chọn khu vực/quốc gia.
 - **Tab ➕ Thêm Giao Dịch Mới:** Nhập liệu form, tự động kiểm tra chống trùng khóa chính (`Primary Key`), ghi dữ liệu bằng lệnh `UPSERT INTO ... VALUES (...)` và tự động `COMMIT`.
 - **Tab ✏️ Sửa Giao Dịch:** Chọn mã từ danh sách hiện tại hoặc nhập mã bất kỳ, tự động đổ dữ liệu cũ vào form, cho phép cập nhật đơn giá, số lượng, khu vực qua cơ chế `UPSERT` nguyên tử.
 - **Tab 🗑️ Xóa Giao Dịch:** Nhập mã cần xóa, hệ thống hiển thị chi tiết đơn hàng để người dùng đối soát, bấm xác nhận để thực thi `DELETE FROM GIAO_DICH WHERE MA_GIAO_DICH = '...'`.
@@ -381,10 +381,10 @@ Trang được phân chia rõ ràng làm 2 Tab chuyên biệt với 20 câu truy
   1. Danh sách 20 giao dịch nội địa
   2. Lọc đơn hàng chi nhánh `MIEN_NAM`
   3. Lọc theo khoảng thời gian Quý 1/2026 (`BETWEEN ... AND`)
-  4. Tra cứu lịch sử khách hàng `KH01` / `KH016`
+  4. Tra cứu lịch sử khách hàng `KH_17850` / `KH_13047`
   5. Thống kê tổng doanh thu toàn thị trường (VNĐ)
   6. Gom nhóm doanh thu theo 3 miền (`GROUP BY KHU_VUC`)
-  7. Top sản phẩm bán chạy nhất Việt Nam (`SP01` - `SP08`)
+  7. Top sản phẩm bán chạy nhất Việt Nam (`85123A`, `71053`...)
   8. Top 5 đơn hàng giá trị cao nhất
   9. Lọc khu vực đạt doanh số trên 100 triệu VNĐ (`HAVING`)
   10. Xem kế hoạch thực thi `EXPLAIN Plan` trên vùng `MIEN_NAM`
@@ -423,7 +423,7 @@ Trang được phân chia rõ ràng làm 2 Tab chuyên biệt với 20 câu truy
 #### 7. 🏛️ Kiến Trúc Hệ Thống & Salt Buckets = 8
 - **Sơ đồ phân tầng Phoenix - HBase:** Trực quan hóa cách Phoenix Client kết nối ZooKeeper, dịch ANSI SQL thành HBase Coprocessors và đẩy tính toán trực tiếp xuống các RegionServers chứa dữ liệu.
 - **Trực quan hóa 8 Salt Buckets:** Giải thích cơ chế chống hiện tượng nghẽn cổ chai ghi tuần tự (*Region Hotspotting*) bằng cách thêm 1 byte băm `(0x00 .. 0x07)` vào trước RowKey.
-- **Công cụ băm RowKey tương tác:** Nhập mã giao dịch bất kỳ (ví dụ: `GD001`, `TX_0000001`), hệ thống tính toán ngay mã Salt Bucket và hiển thị cấu trúc RowKey thực tế trên HBase.
+- **Công cụ băm RowKey tương tác:** Nhập mã giao dịch bất kỳ (ví dụ: `TX_0000001`, `TX_0000002`), hệ thống tính toán ngay mã Salt Bucket và hiển thị cấu trúc RowKey thực tế trên HBase.
 
 #### 8. 📚 SYSTEM.CATALOG & Siêu Dữ Liệu (Metadata Explorer)
 - Khám phá bảng siêu dữ liệu nội tại `SYSTEM.CATALOG` của Apache Phoenix.

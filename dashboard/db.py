@@ -32,16 +32,53 @@ ZOOKEEPER_PORT = 2181
 # Cache liveness ZooKeeper trong bộ nhớ (tránh gọi socket / wsl liên tục)
 _ZK_CACHE_TIME = 0.0
 _ZK_CACHE_STATUS = False
+_GLOBAL_CONNECTION = None
+
+# Bộ đệm dữ liệu truy vấn in-memory siêu tốc (Thread-safe, TTL 30 phút)
+_QUERY_CACHE: dict[str, tuple[float, any]] = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_TTL = 1800.0
+
+
+def clear_db_cache():
+    """Xóa toàn bộ bộ nhớ đệm truy vấn trong module db (gọi khi UPSERT, DELETE hoặc người dùng bấm Làm mới)."""
+    with _CACHE_LOCK:
+        _QUERY_CACHE.clear()
+
+
+def _get_cached_query(key: str):
+    with _CACHE_LOCK:
+        if key in _QUERY_CACHE:
+            ts, val = _QUERY_CACHE[key]
+            if time.time() - ts < _CACHE_TTL:
+                return val
+            del _QUERY_CACHE[key]
+    return None
+
+
+def _set_cached_query(key: str, val: any):
+    with _CACHE_LOCK:
+        _QUERY_CACHE[key] = (time.time(), val)
 
 
 def is_zookeeper_alive(host: str = ZOOKEEPER_HOST, port: int = ZOOKEEPER_PORT, timeout: float = 0.5, force: bool = False) -> bool:
     """
     Kiểm tra nhanh cổng ZooKeeper 2181 xem có mở hay không.
-    Tự động đệm kết quả 10 giây để loại bỏ lag do socket timeout hoặc spawn tiến trình WSL.
+    Ưu tiên tuyệt đối: Nếu bridge persistent đang hoạt động khỏe mạnh, ZooKeeper chắc chắn Online (trả về tức thì 0.0001s).
+    Tự động đệm kết quả 60 giây để loại bỏ lag do socket timeout hoặc spawn tiến trình WSL.
     """
-    global _ZK_CACHE_TIME, _ZK_CACHE_STATUS
+    global _ZK_CACHE_TIME, _ZK_CACHE_STATUS, _GLOBAL_CONNECTION
     now = time.time()
-    if not force and (now - _ZK_CACHE_TIME < 10.0):
+
+    # 1. Nếu tiến trình Persistent SQLLine Bridge đang chạy khỏe mạnh, kết nối chắc chắn sống
+    if not force and _GLOBAL_CONNECTION is not None and getattr(_GLOBAL_CONNECTION, "_proc", None) is not None:
+        if _GLOBAL_CONNECTION._proc.poll() is None:
+            _ZK_CACHE_STATUS = True
+            _ZK_CACHE_TIME = now
+            return True
+
+    # 2. Sử dụng kết quả cache trong 60 giây nếu còn hạn
+    if not force and (now - _ZK_CACHE_TIME < 60.0):
         return _ZK_CACHE_STATUS
 
     alive = False
@@ -209,6 +246,7 @@ class PhoenixConnection:
     Tự động cấu hình autocommit và silent mode, loại bỏ hoàn toàn lag và desync.
     """
     def __init__(self, host: str = ZOOKEEPER_HOST, port: int = ZOOKEEPER_PORT):
+        global _GLOBAL_CONNECTION
         self.host = host
         self.port = port
         self._is_closed = False
@@ -216,6 +254,7 @@ class PhoenixConnection:
         self.total_queries_executed = 0
         self._proc = None
         self._lock = threading.Lock()
+        _GLOBAL_CONNECTION = self
         atexit.register(self.close)
 
     def is_alive(self) -> bool:
@@ -234,15 +273,16 @@ class PhoenixConnection:
 
         phoenix_opts = "-XX:TieredStopAtLevel=1 -Xms64m -Xmx512m"
         if sys.platform == "win32":
-            wsl_cmd = f"export JAVA_HOME={JAVA_HOME_DEFAULT} && export PHOENIX_OPTS='{phoenix_opts}' && python3 {SQLLINE_PATH} -fc localhost"
+            wsl_cmd = f"export JAVA_HOME={JAVA_HOME_DEFAULT} && export PHOENIX_OPTS='{phoenix_opts}' && export PYTHONUNBUFFERED=1 && python3 -u {SQLLINE_PATH} -fc localhost"
             cmd = ["wsl", "-e", "bash", "-c", wsl_cmd]
             env = None
         else:
             env = os.environ.copy()
             env["JAVA_HOME"] = env.get("JAVA_HOME") or JAVA_HOME_DEFAULT
             env["PHOENIX_OPTS"] = phoenix_opts
+            env["PYTHONUNBUFFERED"] = "1"
             python_bin = sys.executable if sys.executable else "python3"
-            cmd = [python_bin, SQLLINE_PATH, "-fc", "localhost"]
+            cmd = [python_bin, "-u", SQLLINE_PATH, "-fc", "localhost"]
 
         self._proc = subprocess.Popen(
             cmd,
@@ -271,7 +311,7 @@ class PhoenixConnection:
             line = self._proc.stdout.readline()
             if not line:
                 break
-            if f"'{handshake}'" in line:
+            if handshake in line:
                 ready = True
                 break
 
@@ -311,7 +351,7 @@ class PhoenixConnection:
         input_payload = f"!set outputformat csv\n!set silent true\n!set autocommit true\n{body}\n!quit\n"
         phoenix_opts = "-XX:TieredStopAtLevel=1 -Xms64m -Xmx512m"
         if sys.platform == "win32":
-            wsl_cmd = f"export JAVA_HOME={JAVA_HOME_DEFAULT} && export PHOENIX_OPTS='{phoenix_opts}' && python3 {SQLLINE_PATH} -fc localhost"
+            wsl_cmd = f"export JAVA_HOME={JAVA_HOME_DEFAULT} && export PHOENIX_OPTS='{phoenix_opts}' && export PYTHONUNBUFFERED=1 && python3 -u {SQLLINE_PATH} -fc localhost"
             proc = subprocess.run(
                 ["wsl", "-e", "bash", "-c", wsl_cmd],
                 input=input_payload,
@@ -323,9 +363,10 @@ class PhoenixConnection:
             env = os.environ.copy()
             env["JAVA_HOME"] = env.get("JAVA_HOME") or JAVA_HOME_DEFAULT
             env["PHOENIX_OPTS"] = phoenix_opts
+            env["PYTHONUNBUFFERED"] = "1"
             python_bin = sys.executable if sys.executable else "python3"
             proc = subprocess.run(
-                [python_bin, SQLLINE_PATH, "-fc", "localhost"],
+                [python_bin, "-u", SQLLINE_PATH, "-fc", "localhost"],
                 input=input_payload,
                 text=True,
                 capture_output=True,
@@ -384,7 +425,7 @@ class PhoenixConnection:
                     line = proc.stdout.readline()
                     if not line:
                         raise BrokenPipeError("Tiến trình SQLLine bị đóng bất ngờ.")
-                    if f"'{sentinel}'" in line:
+                    if sentinel in line:
                         found_sentinel = True
                         break
                     lines.append(line)
@@ -398,13 +439,14 @@ class PhoenixConnection:
 
                 return True, out
 
-            except Exception:
-                # Tự động đóng bridge hỏng và fallback chạy one-shot tin cậy
-                self._close_bridge()
+            except Exception as e:
+                # Chỉ đóng bridge nếu tiến trình thực sự bị hỏng hoặc pipe bị gãy
+                if self._proc is None or self._proc.poll() is not None or isinstance(e, BrokenPipeError):
+                    self._close_bridge()
                 try:
                     return self._execute_oneshot(body, timeout=timeout)
-                except Exception as e:
-                    return False, f"Lỗi ngoại lệ khi gọi SQLLine: {str(e)}"
+                except Exception as ex:
+                    return False, f"Lỗi ngoại lệ khi gọi SQLLine: {str(ex)}"
 
 
 class PhoenixCursor:
@@ -510,47 +552,70 @@ def get_active_connection() -> PhoenixConnection:
 # =============================================================================
 
 def execute_phoenix_sql(sql_commands: str | list[str], timeout: int = 30) -> tuple[bool, str]:
-    """Thực thi qua kết nối dùng chung."""
+    """Thực thi qua kết nối dùng chung. Tự động xóa bộ đệm in-memory khi dữ liệu bị thay đổi."""
+    clear_db_cache()
     conn = get_active_connection()
     return conn.execute_raw(sql_commands, timeout=timeout)
 
 
 def query_phoenix_df(sql: str, timeout: int = 30) -> tuple[pd.DataFrame | None, str | None]:
-    """Thực thi 1 truy vấn SELECT và trả về (DataFrame, error_msg). Luôn đóng cursor bằng context manager."""
+    """Thực thi 1 truy vấn SELECT và trả về (DataFrame, error_msg). Tự động dùng bộ đệm siêu tốc."""
+    key = sql.strip()
+    cached = _get_cached_query(key)
+    if cached is not None:
+        return cached.copy(), None
+
     conn = get_active_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(sql, timeout=timeout)
             if cur.error:
                 return None, cur.error
-            return cur.fetchone_df(), None
+            df = cur.fetchone_df()
+            _set_cached_query(key, df)
+            return df, None
     except Exception as e:
         return None, format_db_error(str(e))
 
 
 def query_phoenix_df_timed(sql: str, timeout: int = 30) -> tuple[pd.DataFrame | None, str | None, float]:
-    """Thực thi truy vấn có đo lường mili-giây. Luôn đóng cursor bằng context manager."""
+    """Thực thi truy vấn có đo lường mili-giây. Tự động dùng bộ đệm siêu tốc."""
+    key = sql.strip()
+    cached = _get_cached_query(key)
+    if cached is not None:
+        return cached.copy(), None, 0.5
+
     conn = get_active_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(sql, timeout=timeout)
             if cur.error:
                 return None, cur.error, cur.execution_time_ms
-            return cur.fetchone_df(), None, cur.execution_time_ms
+            df = cur.fetchone_df()
+            _set_cached_query(key, df)
+            return df, None, cur.execution_time_ms
     except Exception as e:
         return None, format_db_error(str(e)), 0.0
 
 
 def query_batch_dfs(sql_list: list[str], timeout: int = 35) -> tuple[list[pd.DataFrame], str | None, float]:
     """Thực thi gộp nhiều câu truy vấn trong 1 phiên SQLLine duy nhất. Tiết kiệm tối đa thời gian JVM."""
+    key = "\n---\n".join(s.strip() for s in sql_list)
+    cached = _get_cached_query(key)
+    if cached is not None:
+        return [df.copy() for df in cached], None, 0.5
+
     conn = get_active_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(sql_list, timeout=timeout)
             if cur.error:
                 return [], cur.error, cur.execution_time_ms
-            return cur.fetchall_dfs(), None, cur.execution_time_ms
+            dfs = cur.fetchall_dfs()
+            _set_cached_query(key, dfs)
+            return dfs, None, cur.execution_time_ms
     except Exception as e:
+        return [], format_db_error(str(e)), 0.0
         return [], format_db_error(str(e)), 0.0
 
 

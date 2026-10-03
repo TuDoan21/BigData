@@ -66,23 +66,21 @@ def inject_custom_css():
         }
 
         /* Nút bấm trên Sidebar Cyber Tech đồng bộ với Status Badge */
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] div.stButton,
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] div[data-testid="stButton"],
         [data-testid="stSidebar"] div.stButton,
-        [data-testid="stSidebar"] div[data-testid="stButton"],
-        section[data-testid="stSidebar"] div.stButton,
-        section[data-testid="stSidebar"] div[data-testid="stButton"] {
+        [data-testid="stSidebar"] div[data-testid="stButton"] {
             margin: 0 !important;
             padding: 0 !important;
             height: 38px !important;
         }
 
-        [data-testid="stSidebar"] button,
-        [data-testid="stSidebar"] button[kind="secondary"],
-        [data-testid="stSidebar"] button[kind="primary"],
-        [data-testid="stSidebar"] [data-testid="baseButton-secondary"],
-        [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"],
-        [data-testid="stSidebar"] .stButton > button,
-        [data-testid="stSidebar"] div[data-testid="stButton"] > button,
-        section[data-testid="stSidebar"] button {
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button,
+        [data-testid="stSidebar"] div.stButton button,
+        [data-testid="stSidebar"] div[data-testid="stButton"] button,
+        section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button,
+        section[data-testid="stSidebar"] div.stButton button,
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button {
             background: linear-gradient(135deg, rgba(14, 165, 233, 0.15) 0%, rgba(2, 132, 199, 0.25) 100%) !important;
             background-color: #0B132B !important;
             border: 1px solid rgba(56, 189, 248, 0.45) !important;
@@ -107,11 +105,12 @@ def inject_custom_css():
             margin: 0 !important;
         }
 
-        [data-testid="stSidebar"] button:hover,
-        [data-testid="stSidebar"] button[kind="secondary"]:hover,
-        [data-testid="stSidebar"] [data-testid="baseButton-secondary"]:hover,
-        [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover,
-        section[data-testid="stSidebar"] button:hover {
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover,
+        [data-testid="stSidebar"] div.stButton button:hover,
+        [data-testid="stSidebar"] div[data-testid="stButton"] button:hover,
+        section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover,
+        section[data-testid="stSidebar"] div.stButton button:hover,
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button:hover {
             background: linear-gradient(135deg, rgba(14, 165, 233, 0.35) 0%, rgba(2, 132, 199, 0.5) 100%) !important;
             background-color: #0F172A !important;
             border-color: #00F2FE !important;
@@ -120,16 +119,21 @@ def inject_custom_css():
             transform: translateY(-1px) !important;
         }
 
-        [data-testid="stSidebar"] button:active,
-        section[data-testid="stSidebar"] button:active {
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:active,
+        [data-testid="stSidebar"] div.stButton button:active,
+        [data-testid="stSidebar"] div[data-testid="stButton"] button:active,
+        section[data-testid="stSidebar"] div.stButton button:active,
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button:active {
             transform: scale(0.97) !important;
         }
 
-        [data-testid="stSidebar"] button p,
-        [data-testid="stSidebar"] button span,
-        [data-testid="stSidebar"] button div,
-        section[data-testid="stSidebar"] button p,
-        section[data-testid="stSidebar"] button span {
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button p,
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button div,
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button span,
+        [data-testid="stSidebar"] div.stButton button p,
+        [data-testid="stSidebar"] div[data-testid="stButton"] button p,
+        section[data-testid="stSidebar"] div.stButton button p,
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button p {
             color: #38BDF8 !important;
             font-family: 'JetBrains Mono', monospace !important;
             font-size: 0.82rem !important;
@@ -141,11 +145,73 @@ def inject_custom_css():
             background-color: transparent !important;
         }
 
-        [data-testid="stSidebar"] button:hover p,
-        [data-testid="stSidebar"] button:hover span,
-        section[data-testid="stSidebar"] button:hover p,
-        section[data-testid="stSidebar"] button:hover span {
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover p,
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover div,
+        [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover span,
+        [data-testid="stSidebar"] div.stButton button:hover p,
+        [data-testid="stSidebar"] div[data-testid="stButton"] button:hover p,
+        section[data-testid="stSidebar"] div.stButton button:hover p,
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button:hover p {
             color: #FFFFFF !important;
+        }
+
+        /* Bảo vệ tuyệt đối và khôi phục nút đóng/mở Sidebar của Streamlit (Material Symbols) */
+        [data-testid="stSidebarCollapseButton"],
+        [data-testid="stSidebarCollapseButton"] button,
+        [data-testid="collapsedControl"],
+        [data-testid="collapsedControl"] button,
+        [data-testid="stSidebarCollapsedControl"],
+        [data-testid="stSidebarCollapsedControl"] button,
+        [data-testid="stSidebarHeader"] button,
+        button[data-testid="baseButton-header"],
+        button[data-testid="stBaseButton-header"] {
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            width: auto !important;
+            height: auto !important;
+            min-height: unset !important;
+            max-height: unset !important;
+            line-height: normal !important;
+            padding: 4px !important;
+            color: #94A3B8 !important;
+            transform: none !important;
+        }
+
+        [data-testid="stSidebarCollapseButton"] button:hover,
+        [data-testid="collapsedControl"] button:hover,
+        [data-testid="stSidebarCollapsedControl"] button:hover,
+        [data-testid="stSidebarHeader"] button:hover,
+        button[data-testid="baseButton-header"]:hover,
+        button[data-testid="stBaseButton-header"]:hover {
+            background: rgba(56, 189, 248, 0.1) !important;
+            border: none !important;
+            box-shadow: none !important;
+            color: #38BDF8 !important;
+            transform: none !important;
+        }
+
+        [data-testid="stSidebarCollapseButton"] span,
+        [data-testid="collapsedControl"] span,
+        [data-testid="stSidebarCollapsedControl"] span,
+        [data-testid="stSidebarHeader"] button span,
+        button[data-testid="baseButton-header"] span,
+        button[data-testid="stBaseButton-header"] span,
+        span[data-testid="stIconMaterial"],
+        span[class*="material"] {
+            font-family: 'Material Symbols Rounded', 'Material Symbols Outlined', 'Material Icons', sans-serif !important;
+            font-style: normal !important;
+            font-weight: normal !important;
+            font-size: 1.25rem !important;
+            line-height: 1 !important;
+            letter-spacing: normal !important;
+            text-transform: none !important;
+            display: inline-block !important;
+            white-space: nowrap !important;
+            word-wrap: normal !important;
+            direction: ltr !important;
+            -webkit-font-feature-settings: 'liga' !important;
+            -webkit-font-smoothing: antialiased !important;
         }
 
         /* Tiêu đề ứng dụng High-Tech Command Center HUD */
