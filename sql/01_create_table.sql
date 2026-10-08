@@ -5,7 +5,7 @@
 
 -- 1. Tạo bảng GIAO_DICH với 8 Salt Buckets để phân tán dữ liệu đều trên HBase RegionServers,
 --    chống hiện tượng Region Hotspotting khi ghi dữ liệu lớn theo tuần tự.
-CREATE TABLE GIAO_DICH (
+CREATE TABLE IF NOT EXISTS GIAO_DICH (
     MA_GIAO_DICH VARCHAR NOT NULL,
     MA_KHACH_HANG VARCHAR,
     MA_SAN_PHAM VARCHAR,

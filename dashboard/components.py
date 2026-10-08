@@ -12,7 +12,17 @@ MỤC ĐÍCH: Các thành phần giao diện Streamlit Đậm Chất Công Ngh�
 """
 
 import streamlit as st
+import textwrap
 from formatting import format_currency, format_currency_compact, format_number
+
+
+def render_html_block(html_str: str):
+    """Render HTML an toàn tuyệt đối qua st.html để không bao giờ bị Markdown biến thành code block."""
+    clean_html = textwrap.dedent(html_str).strip()
+    if hasattr(st, "html"):
+        st.html(clean_html)
+    else:
+        st.markdown(clean_html, unsafe_allow_html=True)
 
 
 def inject_custom_css():
@@ -27,8 +37,13 @@ def inject_custom_css():
             font-family: 'Inter', -apple-system, sans-serif;
         }
 
-        .main, .block-container {
-            padding-top: 1.0rem !important;
+        header[data-testid="stHeader"] {
+            background-color: transparent !important;
+            height: 3.0rem !important;
+        }
+
+        .main, .block-container, div[data-testid="stMainBlockContainer"] {
+            padding-top: 4.2rem !important;
             padding-bottom: 2rem !important;
             max-width: 98% !important;
             background-color: #F8FAFC;
@@ -541,11 +556,11 @@ def inject_custom_css():
 
 def render_header(page_title: str = "TỔNG QUAN HỆ THỐNG"):
     """Hiển thị Header chuẩn nhận diện thương hiệu báo cáo Big Data công nghệ cao."""
-    st.markdown(
+    render_html_block(
         f"""
         <div class="header-container">
             <div>
-                <h1 class="header-title">⚡ APACHE PHOENIX CLUSTER HUD</h1>
+                <h1 class="header-title">⚡ APACHE PHOENIX </h1>
                 <div class="header-subtitle">Hệ Quản Trị Cơ Sở Dữ Liệu SQL Phân Tán Trên Apache HBase &bull; Báo Cáo Big Data 2026</div>
             </div>
             <div class="header-badges">
@@ -554,8 +569,7 @@ def render_header(page_title: str = "TỔNG QUAN HỆ THỐNG"):
                 <span class="header-badge">{page_title}</span>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -597,7 +611,7 @@ def render_status_bar(sys_status: dict):
         <span class="status-chip accent">⚡ Salt Buckets: 8 Regions</span>
     </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
+    render_html_block(html)
 
 
 def render_kpi_cards(total_tx: int, total_customers: int, total_rev: float, avg_val: float, num_regions: int, symbol: str = "VNĐ"):
@@ -617,7 +631,7 @@ def render_kpi_cards(total_tx: int, total_customers: int, total_rev: float, avg_
 
 def render_execution_stats(duration_ms: float, row_count: int):
     """Hiển thị huy hiệu thời gian thực thi công nghệ cao và số bản ghi."""
-    st.markdown(
+    render_html_block(
         f"""
         <div class="exec-chip">
             <span>⚡ Persistent Bridge: <b>{duration_ms:,.1f} ms</b></span>
@@ -626,8 +640,7 @@ def render_execution_stats(duration_ms: float, row_count: int):
             <span>&bull;</span>
             <span>💵 Tiền tệ: <b>VNĐ</b></span>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -736,7 +749,7 @@ def render_phoenix_architecture_diagram():
         </div>
     </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
+    render_html_block(html)
 
 
 def render_explain_visualizer(explain_plan: str):
@@ -776,7 +789,7 @@ def render_explain_visualizer(explain_plan: str):
             <span style="color: #1E293B; font-size: 0.88rem; flex-grow: 1;"><code>{clean_text}</code>{highlight_hint}</span>
         </div>
         """
-        st.markdown(html_step, unsafe_allow_html=True)
+        render_html_block(html_step)
 
 
 def calculate_salt_bucket(key: str, bucket_count: int = 8) -> int:
@@ -806,90 +819,84 @@ def render_salt_buckets_visualizer(keys: list[str], highlight_key: str | None = 
         keys_preview = ", ".join(buckets_data[i][:3]) + ("..." if len(buckets_data[i]) > 3 else "") if buckets_data[i] else "Trống"
         
         cells_html.append(
-            f"""
-            <div class="bucket-cell {active_cls}">
-                <div class="bucket-num">Bucket #{i}</div>
-                <div class="bucket-hash">Byte tiền tố: 0x0{i}</div>
-                <div class="bucket-count">{count} bản ghi</div>
-                <div style="font-size: 0.72rem; color: #64748B; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace;">
-                    {keys_preview}
-                </div>
-            </div>
-            """
+            f'<div class="bucket-cell {active_cls}">'
+            f'<div class="bucket-num">Bucket #{i}</div>'
+            f'<div class="bucket-hash">Byte tiền tố: 0x0{i}</div>'
+            f'<div class="bucket-count">{count} bản ghi</div>'
+            f'<div style="font-size: 0.72rem; color: #64748B; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace;">{keys_preview}</div>'
+            f'</div>'
         )
 
     grid_content = "".join(cells_html)
-    st.markdown(f'<div class="bucket-grid">{grid_content}</div>', unsafe_allow_html=True)
+    render_html_block(f'<div class="bucket-grid">{grid_content}</div>')
 
 
 def render_data_cleaning_pipeline_diagram():
     """Vẽ sơ đồ quy trình ETL & làm sạch dữ liệu từ Archive vào Apache Phoenix."""
-    st.markdown(
-        """
-        <div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px; padding: 20px; margin-bottom: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.04);">
-            <div style="font-weight: 800; color: #0F172A; font-size: 1.05rem; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace;">
-                <span>🔄</span> QUY TRÌNH ETL & LÀM SẠCH DỮ LIỆU ARCHIVE (QUY ĐỔI VNĐ ĐỒNG BỘ)
-            </div>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; position: relative;">
-                
-                <!-- Bước 1 -->
-                <div style="background: #F8FAFC; border: 1.5px solid #CBD5E1; border-top: 4px solid #64748B; border-radius: 8px; padding: 14px;">
-                    <div style="font-size: 0.75rem; font-weight: 700; color: #64748B; text-transform: uppercase;">Giai đoạn 1</div>
-                    <div style="font-size: 0.95rem; font-weight: 700; color: #0F172A; margin: 4px 0 8px 0;">📂 Nguồn dữ liệu thô</div>
-                    <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; color: #475569; line-height: 1.5;">
-                        <li>File: <code>archive/data.csv</code></li>
-                        <li>Dung lượng: <b>45.5 MB</b></li>
-                        <li>Quy mô: <b>541,909</b> dòng thô</li>
-                        <li>8 cột: InvoiceNo, StockCode, Quantity, UnitPrice...</li>
-                    </ul>
-                </div>
-
-                <!-- Bước 2 -->
-                <div style="background: #FEF2F2; border: 1.5px solid #FECACA; border-top: 4px solid #EF4444; border-radius: 8px; padding: 14px;">
-                    <div style="font-size: 0.75rem; font-weight: 700; color: #DC2626; text-transform: uppercase;">Giai đoạn 2</div>
-                    <div style="font-size: 0.95rem; font-weight: 700; color: #991B1B; margin: 4px 0 8px 0;">🧹 Lọc dữ liệu rác & bất thường</div>
-                    <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; color: #7F1D1D; line-height: 1.5;">
-                        <li>Loại <b>10,624</b> đơn hủy/hoàn (Qty &le; 0)</li>
-                        <li>Loại <b>2,517</b> đơn giá &le; 0 (bad debt)</li>
-                        <li>Loại <b>1,454</b> mô tả sản phẩm rỗng</li>
-                        <li>Khử <b>5,268</b> dòng trùng lặp hoàn toàn</li>
-                    </ul>
-                </div>
-
-                <!-- Bước 3 -->
-                <div style="background: #EFF6FF; border: 1.5px solid #BFDBFE; border-top: 4px solid #3B82F6; border-radius: 8px; padding: 14px;">
-                    <div style="font-size: 0.75rem; font-weight: 700; color: #2563EB; text-transform: uppercase;">Giai đoạn 3</div>
-                    <div style="font-size: 0.95rem; font-weight: 700; color: #1E40AF; margin: 4px 0 8px 0;">⚙️ Chuẩn hóa Schema & Đổi VNĐ</div>
-                    <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; color: #1E3A8A; line-height: 1.5;">
-                        <li>Quy đổi <b>1 USD ~ 26.000 VNĐ</b> đồng nhất</li>
-                        <li>Định dạng ISO <code>yyyy-MM-dd HH:mm:ss</code></li>
-                        <li>Gán <b>KH_GUEST</b> cho 135k khách null</li>
-                        <li>Khóa chính RowKey: <code>TX_0000001</code></li>
-                    </ul>
-                </div>
-
-                <!-- Bước 4 -->
-                <div style="background: #F0FDF4; border: 1.5px solid #BBF7D0; border-top: 4px solid #10B981; border-radius: 8px; padding: 14px;">
-                    <div style="font-size: 0.75rem; font-weight: 700; color: #16A34A; text-transform: uppercase;">Giai đoạn 4</div>
-                    <div style="font-size: 0.95rem; font-weight: 700; color: #065F46; margin: 4px 0 8px 0;">⚡ Bulk Load & Salt Buckets</div>
-                    <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; color: #064E3B; line-height: 1.5;">
-                        <li>Nạp tốc độ cao với <code>psql.py</code></li>
-                        <li>Phân tán đều trên <b>8 Salt Buckets</b></li>
-                        <li>Tự động cập nhật <b>Secondary Index</b></li>
-                        <li>Sẵn sàng truy vấn OLAP &lt; 50ms (VNĐ)</li>
-                    </ul>
-                </div>
-
-            </div>
+    html = """
+    <div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px; padding: 20px; margin-bottom: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.04);">
+        <div style="font-weight: 800; color: #0F172A; font-size: 1.05rem; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace;">
+            <span>🔄</span> QUY TRÌNH ETL & LÀM SẠCH DỮ LIỆU ARCHIVE (QUY ĐỔI VNĐ ĐỒNG BỘ)
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; position: relative;">
+            
+            <!-- Bước 1 -->
+            <div style="background: #F8FAFC; border: 1.5px solid #CBD5E1; border-top: 4px solid #64748B; border-radius: 8px; padding: 14px;">
+                <div style="font-size: 0.75rem; font-weight: 700; color: #64748B; text-transform: uppercase;">Giai đoạn 1</div>
+                <div style="font-size: 0.95rem; font-weight: 700; color: #0F172A; margin: 4px 0 8px 0;">📂 Nguồn dữ liệu thô</div>
+                <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; color: #475569; line-height: 1.5;">
+                    <li>File: <code>archive/data.csv</code> & <code>vietnamese_tiki_products...</code></li>
+                    <li>Dung lượng: <b>48.2 MB</b></li>
+                    <li>Quy mô: <b>547,270</b> dòng thô</li>
+                    <li>Nguồn: Kaggle E-Commerce & Tiki Việt Nam</li>
+                </ul>
+            </div>
+
+            <!-- Bước 2 -->
+            <div style="background: #FEF2F2; border: 1.5px solid #FECACA; border-top: 4px solid #EF4444; border-radius: 8px; padding: 14px;">
+                <div style="font-size: 0.75rem; font-weight: 700; color: #DC2626; text-transform: uppercase;">Giai đoạn 2</div>
+                <div style="font-size: 0.95rem; font-weight: 700; color: #991B1B; margin: 4px 0 8px 0;">🧹 Lọc dữ liệu rác & bất thường</div>
+                <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; color: #7F1D1D; line-height: 1.5;">
+                    <li>Loại bỏ đơn hủy/hoàn (Qty &le; 0)</li>
+                    <li>Loại đơn giá &le; 0 (lỗi hạch toán)</li>
+                    <li>Loại mô tả sản phẩm rỗng</li>
+                    <li>Khử trùng lặp hoàn toàn</li>
+                </ul>
+            </div>
+
+            <!-- Bước 3 -->
+            <div style="background: #EFF6FF; border: 1.5px solid #BFDBFE; border-top: 4px solid #3B82F6; border-radius: 8px; padding: 14px;">
+                <div style="font-size: 0.75rem; font-weight: 700; color: #2563EB; text-transform: uppercase;">Giai đoạn 3</div>
+                <div style="font-size: 0.95rem; font-weight: 700; color: #1E40AF; margin: 4px 0 8px 0;">⚙️ Chuẩn hóa Schema & Đổi VNĐ</div>
+                <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; color: #1E3A8A; line-height: 1.5;">
+                    <li>Quy đổi <b>1 USD ~ 26.000 VNĐ</b> đồng nhất</li>
+                    <li>Định dạng ISO <code>yyyy-MM-dd HH:mm:ss</code></li>
+                    <li>Gán <b>KH_GUEST</b> cho khách vãng lai</li>
+                    <li>RowKey chuẩn: <code>TX_0000001</code></li>
+                </ul>
+            </div>
+
+            <!-- Bước 4 -->
+            <div style="background: #F0FDF4; border: 1.5px solid #BBF7D0; border-top: 4px solid #10B981; border-radius: 8px; padding: 14px;">
+                <div style="font-size: 0.75rem; font-weight: 700; color: #16A34A; text-transform: uppercase;">Giai đoạn 4</div>
+                <div style="font-size: 0.95rem; font-weight: 700; color: #065F46; margin: 4px 0 8px 0;">⚡ Bulk Load & Salt Buckets</div>
+                <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; color: #064E3B; line-height: 1.5;">
+                    <li>Nạp tốc độ cao với <code>psql.py</code></li>
+                    <li>Phân tán đều trên <b>8 Salt Buckets</b></li>
+                    <li>Tự động cập nhật <b>Secondary Index</b></li>
+                    <li>Truy vấn phân tích OLAP &lt; 50ms</li>
+                </ul>
+            </div>
+
+        </div>
+    </div>
+    """
+    render_html_block(html)
 
 
 def render_metric_card(title: str, value: str, subtitle: str, icon: str = "📊", border_color: str = "#0284C7"):
     """Vẽ 1 thẻ metric công nghệ cao có viền màu tùy chọn."""
-    st.markdown(
+    render_html_block(
         f"""
         <div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-top: 3.5px solid {border_color}; border-radius: 10px; padding: 14px; box-shadow: 0 2px 6px rgba(0,0,0,0.03); min-height: 100px;">
             <div style="font-size: 0.78rem; font-weight: 700; color: #64748B; text-transform: uppercase; display: flex; align-items: center; gap: 6px;">
@@ -902,8 +909,7 @@ def render_metric_card(title: str, value: str, subtitle: str, icon: str = "📊"
                 {subtitle}
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 

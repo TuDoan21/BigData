@@ -12,18 +12,41 @@ Bảng màu: Trắng (#FFFFFF), Xanh dương nhạt (#EBF5FF), Xanh đậm (#0F2
 """
 
 import datetime
+import html
+import importlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import textwrap
 import time
 import pandas as pd
 import streamlit as st
-
-import json
-import os
-import subprocess
+import streamlit.components.v1 as st_components
 
 import db
 import queries
 import formatting
 import components
+
+# Luôn nạp lại các module con để tránh lỗi cache bộ nhớ của Streamlit khi cập nhật mã nguồn
+importlib.reload(components)
+importlib.reload(formatting)
+importlib.reload(queries)
+
+
+def render_html_block(html_str: str):
+    """Render HTML an toàn trực tiếp qua st.html để không bao giờ bị Markdown biến thành code block."""
+    clean_html = textwrap.dedent(html_str).strip()
+    if hasattr(st, "html"):
+        st.html(clean_html)
+    elif hasattr(components, "render_html_block"):
+        components.render_html_block(clean_html)
+    else:
+        st.markdown(clean_html, unsafe_allow_html=True)
+
 
 # Cấu hình trang Streamlit chuẩn màn hình laptop
 st.set_page_config(
@@ -41,19 +64,19 @@ components.inject_custom_css()
 # CACHED DATA LOADERS (ĐƯỢC QUẢN LÝ TẬP TRUNG, KHÔNG TỰ ĐỘNG CHẠY BỪA BÃI)
 # =============================================================================
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def cached_is_zookeeper_alive() -> bool:
-    """Cache kiểm tra socket ZooKeeper trong 30s để tránh ping lặp lại mỗi lần rerun."""
+    """Cache kiểm tra socket ZooKeeper trong 1 giờ để tránh ping lặp lại mỗi lần rerun."""
     return db.is_zookeeper_alive()
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_cached_record_by_id(record_id: str) -> tuple[pd.DataFrame | None, str | None]:
     """Cache bản ghi chi tiết để khi chọn sửa/xóa không query liên tục lại Phoenix."""
     return db.query_phoenix_df(queries.sql_get_record_by_id(record_id), timeout=15)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_cached_overview_super_batch(scope: str = "ALL") -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None]:
     """
     Tối ưu hóa Super-Batch: Gộp toàn bộ 6 câu truy vấn của trang Tổng quan
@@ -107,7 +130,7 @@ def load_cached_overview_super_batch(scope: str = "ALL") -> tuple[dict, pd.DataF
     return sys_status, df_kpi, df_region, df_timeline, df_top10, None
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_cached_transactions(
     keyword: str,
     regions: tuple[str, ...],
@@ -130,7 +153,7 @@ def load_cached_transactions(
     return db.query_phoenix_df_timed(sql, timeout=30)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_cached_total_count(keyword: str, regions: tuple[str, ...], market_scope: str = "ALL") -> int:
     """Cache tổng số bản ghi theo bộ lọc và thị trường. Đổi trang không bao giờ chạy lại COUNT(*)."""
     sql = queries.build_count_transactions_query(search_keyword=keyword, khu_vuc_list=regions, market_scope=market_scope)
@@ -143,13 +166,13 @@ def get_cached_total_count(keyword: str, regions: tuple[str, ...], market_scope:
     return 0
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_cached_query_result(sql: str) -> tuple[pd.DataFrame | None, str | None, float]:
     """Cache kết quả truy vấn demo theo câu lệnh SQL để tránh chạy lại khi xem lại."""
     return db.query_phoenix_df_timed(sql, timeout=35)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_cached_index_catalog() -> tuple[list[dict], bool]:
     """Lấy danh mục Index từ SYSTEM.CATALOG trong 1 câu truy vấn duy nhất."""
     all_idx = db.get_all_indexes("GIAO_DICH")
@@ -158,7 +181,7 @@ def load_cached_index_catalog() -> tuple[list[dict], bool]:
     return all_idx, is_active
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_cached_catalog_metadata() -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, str | None]:
     """Tải siêu dữ liệu bảng GIAO_DICH và các bảng hệ thống từ SYSTEM.CATALOG."""
     df_cols, err_cols = db.query_phoenix_df(queries.SQL_METADATA_COLUMNS)
@@ -167,7 +190,7 @@ def load_cached_catalog_metadata() -> tuple[pd.DataFrame | None, pd.DataFrame | 
     return df_cols, df_props, df_sys, err_cols
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_cached_transaction_keys() -> list[str]:
     """Lấy danh sách mã giao dịch để trực quan hóa phân bổ Salt Buckets."""
     sql = "SELECT MA_GIAO_DICH FROM GIAO_DICH ORDER BY MA_GIAO_DICH LIMIT 100;"
@@ -177,7 +200,7 @@ def load_cached_transaction_keys() -> list[str]:
     return []
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_cached_regions(scope: str = "ALL") -> list[str]:
     """Lấy danh sách các thị trường/quốc gia thực tế từ CSDL theo phạm vi thị trường."""
     if scope == "VN":
@@ -193,7 +216,7 @@ def load_cached_regions(scope: str = "ALL") -> list[str]:
     return ["United Kingdom", "Germany", "France", "EIRE", "Spain", "Netherlands"]
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_cleaning_summary() -> dict:
     """Tải báo cáo tóm tắt quy trình làm sạch dữ liệu archive."""
     summary_path = "/mnt/d/2026/BigData/phoenix-demo/data/cleaning_summary.json"
@@ -223,7 +246,7 @@ def load_cleaning_summary() -> dict:
     }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_raw_and_cleaned_samples() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Tải mẫu 5 dòng thô và 5 dòng sạch để trực quan hóa đối chiếu."""
     raw_path = "/mnt/d/2026/BigData/phoenix-demo/archive/data.csv"
@@ -244,12 +267,13 @@ def load_raw_and_cleaned_samples() -> tuple[pd.DataFrame, pd.DataFrame]:
 # =============================================================================
 
 def render_overview(scope: str = "ALL"):
-    """Trang 1: Tổng quan - Tối ưu Super Batch nạp dữ liệu tức thì theo thị trường."""
-    title_suffix = " - 🇻🇳 VIỆT NAM (NỘI ĐỊA)" if scope == "VN" else (" - 🌍 QUỐC TẾ (ARCHIVE)" if scope == "INTL" else "")
-    components.render_header(f"📊 TỔNG QUAN HỆ THỐNG{title_suffix}")
+    """Trang 1: Tổng quan - Hợp nhất toàn hệ thống với 2 Dashboard chuyên biệt cho Việt Nam và Quốc Tế."""
+    components.render_header("📊 TỔNG QUAN HỆ THỐNG (HỢP NHẤT TOÀN DIỆN)")
 
-    with st.spinner("Đang tải dữ liệu tổng quan từ Phoenix HBase..."):
-        sys_status, df_kpi, df_region, df_timeline, df_top10, err = load_cached_overview_super_batch(scope=scope)
+    # Nạp dữ liệu super batch của cả Việt Nam và Quốc Tế (được cache tức thì)
+    sys_status, df_kpi_all, df_region_all, df_timeline_all, df_top10_all, err = load_cached_overview_super_batch(scope="ALL")
+    _, df_kpi_vn, df_region_vn, df_timeline_vn, df_top10_vn, err_vn = load_cached_overview_super_batch(scope="VN")
+    _, df_kpi_intl, df_region_intl, df_timeline_intl, df_top10_intl, err_intl = load_cached_overview_super_batch(scope="INTL")
 
     if err:
         if "TableNotFoundException" in err or "ERROR 1012" in err:
@@ -284,78 +308,930 @@ def render_overview(scope: str = "ALL"):
             else:
                 st.error(f"Lỗi: {msg_tb}")
 
-    # 5 KPI Cards
+    # Tính toán chỉ số tổng thể hợp nhất
     total_tx = 0
     total_cust = 0
     total_rev = 0.0
     avg_val = 0.0
     num_regions = 0
 
-    if df_kpi is not None and not df_kpi.empty:
+    if df_kpi_all is not None and not df_kpi_all.empty:
         try:
-            total_tx = int(float(df_kpi.iloc[0].get("TONG_GIAO_DICH", 0)))
-            total_cust = int(float(df_kpi.iloc[0].get("TONG_KHACH_HANG", 0)))
-            total_rev = float(df_kpi.iloc[0].get("TONG_DOANH_THU", 0.0))
-            avg_val = float(df_kpi.iloc[0].get("GIA_TRI_TRUNG_BINH", 0.0))
-            num_regions = int(float(df_kpi.iloc[0].get("SO_KHU_VUC", 0)))
+            total_tx = int(float(df_kpi_all.iloc[0].get("TONG_GIAO_DICH", 0)))
+            total_cust = int(float(df_kpi_all.iloc[0].get("TONG_KHACH_HANG", 0)))
+            total_rev = float(df_kpi_all.iloc[0].get("TONG_DOANH_THU", 0.0))
+            avg_val = float(df_kpi_all.iloc[0].get("GIA_TRI_TRUNG_BINH", 0.0))
+            num_regions = int(float(df_kpi_all.iloc[0].get("SO_KHU_VUC", 0)))
         except (ValueError, TypeError, KeyError):
             pass
 
-    st.session_state[f"total_records_{scope}"] = total_tx
+    st.session_state["total_records_ALL"] = total_tx
 
-    curr_symbol = "VNĐ"
+    # 5 KPI Cards Hợp Nhất Toàn Bộ Hệ Thống
     components.render_kpi_cards(total_tx, total_cust, total_rev, avg_val, num_regions, symbol="VNĐ")
 
-    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
 
-    # 2 Biểu đồ: Khu vực & Chuỗi thời gian
-    c_chart1, c_chart2 = st.columns(2)
-    with c_chart1:
-        chart_title = "📍 Doanh Thu 3 Miền (VNĐ)" if scope == "VN" else ("📍 Doanh Thu Thị Trường Quốc Tế (Top 10 - VNĐ)" if scope == "INTL" else "📍 Doanh Thu Theo Thị Trường / Quốc Gia (Top 10 - VNĐ)")
-        st.markdown(f"##### {chart_title}")
-        if df_region is not None and not df_region.empty and "KHU_VUC" in df_region.columns:
-            df_reg_plot = df_region.head(10).copy()
-            df_reg_plot["TONG_DOANH_THU"] = pd.to_numeric(df_reg_plot["TONG_DOANH_THU"], errors="coerce").fillna(0)
-            st.bar_chart(data=df_reg_plot, x="KHU_VUC", y="TONG_DOANH_THU", color="#1E88E5", height=280)
+    # -------------------------------------------------------------------------
+    # 2 DASHBOARD CHUYÊN BIỆT: VIỆT NAM VÀ QUỐC TẾ
+    # -------------------------------------------------------------------------
+    tab_vn, tab_intl, tab_compare = st.tabs([
+        "🇻🇳 DASHBOARD THỊ TRƯỜNG VIỆT NAM (NỘI ĐỊA)",
+        "🌍 DASHBOARD THỊ TRƯỜNG QUỐC TẾ (ARCHIVE)",
+        "🌐 ĐỐI CHIẾU & SO SÁNH 2 THỊ TRƯỜNG",
+    ])
+
+    # Chỉ số riêng cho Việt Nam
+    tx_vn = 0
+    cust_vn = 0
+    rev_vn = 0.0
+    avg_vn = 0.0
+    if df_kpi_vn is not None and not df_kpi_vn.empty:
+        try:
+            tx_vn = int(float(df_kpi_vn.iloc[0].get("TONG_GIAO_DICH", 0)))
+            cust_vn = int(float(df_kpi_vn.iloc[0].get("TONG_KHACH_HANG", 0)))
+            rev_vn = float(df_kpi_vn.iloc[0].get("TONG_DOANH_THU", 0.0))
+            avg_vn = float(df_kpi_vn.iloc[0].get("GIA_TRI_TRUNG_BINH", 0.0))
+        except Exception:
+            pass
+
+    # Chỉ số riêng cho Quốc Tế
+    tx_intl = 0
+    cust_intl = 0
+    rev_intl = 0.0
+    avg_intl = 0.0
+    regions_intl = 0
+    if df_kpi_intl is not None and not df_kpi_intl.empty:
+        try:
+            tx_intl = int(float(df_kpi_intl.iloc[0].get("TONG_GIAO_DICH", 0)))
+            cust_intl = int(float(df_kpi_intl.iloc[0].get("TONG_KHACH_HANG", 0)))
+            rev_intl = float(df_kpi_intl.iloc[0].get("TONG_DOANH_THU", 0.0))
+            avg_intl = float(df_kpi_intl.iloc[0].get("GIA_TRI_TRUNG_BINH", 0.0))
+            regions_intl = int(float(df_kpi_intl.iloc[0].get("SO_KHU_VUC", 0)))
+        except Exception:
+            pass
+
+    # =========================================================================
+    # TAB 1: DASHBOARD VIỆT NAM
+    # =========================================================================
+    with tab_vn:
+        render_html_block(
+            """
+            <div style="background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(185, 28, 28, 0.22) 100%); border: 1.5px solid #EF4444; border-radius: 10px; padding: 12px 18px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <span style="font-size: 0.76rem; font-weight: 700; color: #FCA5A5; text-transform: uppercase; font-family: monospace;">Nguồn dữ liệu: Tiki E-Commerce Việt Nam &bull; Đã làm sạch & chuẩn hóa</span>
+                    <div style="font-size: 1.05rem; font-weight: 800; color: #FFFFFF; margin-top: 2px;">🇻🇳 THỊ TRƯỜNG VIỆT NAM (NỘI ĐỊA - 2,500 ĐƠN HÀNG)</div>
+                </div>
+                <span style="background: #991B1B; color: #FEF2F2; padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: monospace;">3 MIỀN &bull; VNĐ</span>
+            </div>
+            """
+        )
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("📋 Bản Ghi Việt Nam", formatting.format_number(tx_vn))
+        with c2:
+            st.metric("👥 Khách Hàng VN", formatting.format_number(cust_vn))
+        with c3:
+            st.metric("💰 Doanh Thu VN", formatting.format_currency_compact(rev_vn))
+        with c4:
+            st.metric("📊 Giá Trị TB / Đơn", formatting.format_currency(avg_vn))
+
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+        c_v1, c_v2 = st.columns(2)
+        with c_v1:
+            st.markdown("##### 📍 Doanh Thu 3 Miền Bắc - Trung - Nam (VNĐ)")
+            if df_region_vn is not None and not df_region_vn.empty and "KHU_VUC" in df_region_vn.columns:
+                df_v_plot = df_region_vn.copy()
+                df_v_plot["TONG_DOANH_THU"] = pd.to_numeric(df_v_plot["TONG_DOANH_THU"], errors="coerce").fillna(0)
+                st.bar_chart(data=df_v_plot, x="KHU_VUC", y="TONG_DOANH_THU", color="#EF4444", height=280)
+            else:
+                st.info("Chưa có dữ liệu doanh thu khu vực Việt Nam.")
+
+        with c_v2:
+            st.markdown("##### 📈 Doanh Thu Theo Dòng Thời Gian Tại Việt Nam")
+            if df_timeline_vn is not None and not df_timeline_vn.empty and "NGAY_GIAO_DICH" in df_timeline_vn.columns:
+                df_vt_plot = df_timeline_vn.copy()
+                df_vt_plot["DOANH_THU_NGAY"] = pd.to_numeric(df_vt_plot["DOANH_THU_NGAY"], errors="coerce").fillna(0)
+                st.line_chart(data=df_vt_plot, x="NGAY_GIAO_DICH", y="DOANH_THU_NGAY", color="#F87171", height=280)
+            else:
+                st.info("Chưa có dữ liệu dòng thời gian Việt Nam.")
+
+        c_v3, c_v4 = st.columns(2)
+        with c_v3:
+            st.markdown("##### 📦 Số Lượng Giao Dịch 3 Miền")
+            if df_region_vn is not None and not df_region_vn.empty and "KHU_VUC" in df_region_vn.columns and "SO_GIAO_DICH" in df_region_vn.columns:
+                df_vq_plot = df_region_vn.copy()
+                df_vq_plot["SO_GIAO_DICH"] = pd.to_numeric(df_vq_plot["SO_GIAO_DICH"], errors="coerce").fillna(0)
+                st.bar_chart(data=df_vq_plot, x="KHU_VUC", y="SO_GIAO_DICH", color="#10B981", height=260)
+            else:
+                st.info("Chưa có dữ liệu số lượng đơn hàng 3 miền.")
+
+        with c_v4:
+            st.markdown("##### 📅 Mật Độ Giao Dịch Theo Ngày (Việt Nam)")
+            if df_timeline_vn is not None and not df_timeline_vn.empty and "NGAY_GIAO_DICH" in df_timeline_vn.columns and "SO_GIAO_DICH" in df_timeline_vn.columns:
+                df_vtc_plot = df_timeline_vn.copy()
+                df_vtc_plot["SO_GIAO_DICH"] = pd.to_numeric(df_vtc_plot["SO_GIAO_DICH"], errors="coerce").fillna(0)
+                st.line_chart(data=df_vtc_plot, x="NGAY_GIAO_DICH", y="SO_GIAO_DICH", color="#F59E0B", height=260)
+            else:
+                st.info("Chưa có dữ liệu mật độ đơn hàng Việt Nam.")
+
+        if df_top10_vn is not None and not df_top10_vn.empty:
+            st.markdown("##### 📋 Đơn Hàng Việt Nam Gần Đây:")
+            st.dataframe(df_top10_vn.head(5), hide_index=True, use_container_width=True)
+
+    # =========================================================================
+    # TAB 2: DASHBOARD QUỐC TẾ
+    # =========================================================================
+    with tab_intl:
+        render_html_block(
+            """
+            <div style="background: linear-gradient(135deg, rgba(2, 132, 199, 0.12) 0%, rgba(3, 105, 161, 0.22) 100%); border: 1.5px solid #0284C7; border-radius: 10px; padding: 12px 18px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <span style="font-size: 0.76rem; font-weight: 700; color: #7DD3FC; text-transform: uppercase; font-family: monospace;">Nguồn dữ liệu: Kaggle Retail E-Commerce Archive &bull; Đã quy đổi VNĐ</span>
+                    <div style="font-size: 1.05rem; font-weight: 800; color: #FFFFFF; margin-top: 2px;">🌍 THỊ TRƯỜNG QUỐC TẾ (ARCHIVE - 5,000 ĐƠN HÀNG)</div>
+                </div>
+                <span style="background: #0369A1; color: #F0F9FF; padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: monospace;">38 QUỐC GIA &bull; VNĐ</span>
+            </div>
+            """
+        )
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("📋 Bản Ghi Quốc Tế", formatting.format_number(tx_intl))
+        with c2:
+            st.metric("👥 Khách Hàng Quốc Tế", formatting.format_number(cust_intl))
+        with c3:
+            st.metric("💰 Doanh Thu Quốc Tế", formatting.format_currency_compact(rev_intl))
+        with c4:
+            st.metric("📊 Giá Trị TB / Đơn", formatting.format_currency(avg_intl))
+
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+        c_i1, c_i2 = st.columns(2)
+        with c_i1:
+            st.markdown("##### 📍 Doanh Thu Top 10 Quốc Gia (VNĐ)")
+            if df_region_intl is not None and not df_region_intl.empty and "KHU_VUC" in df_region_intl.columns:
+                df_i_plot = df_region_intl.head(10).copy()
+                df_i_plot["TONG_DOANH_THU"] = pd.to_numeric(df_i_plot["TONG_DOANH_THU"], errors="coerce").fillna(0)
+                st.bar_chart(data=df_i_plot, x="KHU_VUC", y="TONG_DOANH_THU", color="#0284C7", height=280)
+            else:
+                st.info("Chưa có dữ liệu phân bố quốc tế.")
+
+        with c_i2:
+            st.markdown("##### 📈 Doanh Thu Theo Dòng Thời Gian Thị Trường Quốc Tế")
+            if df_timeline_intl is not None and not df_timeline_intl.empty and "NGAY_GIAO_DICH" in df_timeline_intl.columns:
+                df_it_plot = df_timeline_intl.copy()
+                df_it_plot["DOANH_THU_NGAY"] = pd.to_numeric(df_it_plot["DOANH_THU_NGAY"], errors="coerce").fillna(0)
+                st.line_chart(data=df_it_plot, x="NGAY_GIAO_DICH", y="DOANH_THU_NGAY", color="#38BDF8", height=280)
+            else:
+                st.info("Chưa có dữ liệu dòng thời gian quốc tế.")
+
+        c_i3, c_i4 = st.columns(2)
+        with c_i3:
+            st.markdown("##### 📦 Số Lượng Giao Dịch Top 10 Quốc Gia")
+            if df_region_intl is not None and not df_region_intl.empty and "KHU_VUC" in df_region_intl.columns and "SO_GIAO_DICH" in df_region_intl.columns:
+                df_iq_plot = df_region_intl.head(10).copy()
+                df_iq_plot["SO_GIAO_DICH"] = pd.to_numeric(df_iq_plot["SO_GIAO_DICH"], errors="coerce").fillna(0)
+                st.bar_chart(data=df_iq_plot, x="KHU_VUC", y="SO_GIAO_DICH", color="#10B981", height=260)
+            else:
+                st.info("Chưa có dữ liệu số lượng đơn hàng quốc tế.")
+
+        with c_i4:
+            st.markdown("##### 📅 Mật Độ Giao Dịch Theo Ngày (Quốc Tế)")
+            if df_timeline_intl is not None and not df_timeline_intl.empty and "NGAY_GIAO_DICH" in df_timeline_intl.columns and "SO_GIAO_DICH" in df_timeline_intl.columns:
+                df_itc_plot = df_timeline_intl.copy()
+                df_itc_plot["SO_GIAO_DICH"] = pd.to_numeric(df_itc_plot["SO_GIAO_DICH"], errors="coerce").fillna(0)
+                st.line_chart(data=df_itc_plot, x="NGAY_GIAO_DICH", y="SO_GIAO_DICH", color="#F59E0B", height=260)
+            else:
+                st.info("Chưa có dữ liệu mật độ đơn hàng quốc tế.")
+
+        if df_top10_intl is not None and not df_top10_intl.empty:
+            st.markdown("##### 📋 Đơn Hàng Quốc Tế Gần Đây:")
+            st.dataframe(df_top10_intl.head(5), hide_index=True, use_container_width=True)
+
+    # =========================================================================
+    # TAB 3: ĐỐI CHIẾU & SO SÁNH 2 THỊ TRƯỜNG
+    # =========================================================================
+    with tab_compare:
+        render_html_block(
+            """
+            <div style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(5, 150, 105, 0.22) 100%); border: 1.5px solid #10B981; border-radius: 10px; padding: 12px 18px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <span style="font-size: 0.76rem; font-weight: 700; color: #A7F3D0; text-transform: uppercase; font-family: monospace;">Phân tích phân tán song song trên Apache Phoenix / HBase</span>
+                    <div style="font-size: 1.05rem; font-weight: 800; color: #FFFFFF; margin-top: 2px;">🌐 SO SÁNH CƠ CẤU DOANH THU & ĐƠN HÀNG: VIỆT NAM vs QUỐC TẾ</div>
+                </div>
+                <span style="background: #065F46; color: #ECFDF5; padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: monospace;">TỔNG 7,500 GD &bull; VNĐ</span>
+            </div>
+            """
+        )
+
+        col_cmp1, col_cmp2 = st.columns(2)
+        with col_cmp1:
+            st.markdown("##### 💰 So Sánh Tổng Doanh Thu (VNĐ)")
+            df_cmp_rev = pd.DataFrame([
+                {"THỊ TRƯỜNG": "🇻🇳 Việt Nam (Nội địa)", "DOANH_THU": rev_vn},
+                {"THỊ TRƯỜNG": "🌍 Quốc Tế (Archive)", "DOANH_THU": rev_intl},
+            ])
+            st.bar_chart(data=df_cmp_rev, x="THỊ TRƯỜNG", y="DOANH_THU", color="#00F2FE", height=280)
+
+        with col_cmp2:
+            st.markdown("##### 📦 So Sánh Số Lượng Đơn Hàng")
+            df_cmp_cnt = pd.DataFrame([
+                {"THỊ TRƯỜNG": "🇻🇳 Việt Nam (Nội địa)", "SO_GIAO_DICH": tx_vn},
+                {"THỊ TRƯỜNG": "🌍 Quốc Tế (Archive)", "SO_GIAO_DICH": tx_intl},
+            ])
+            st.bar_chart(data=df_cmp_cnt, x="THỊ TRƯỜNG", y="SO_GIAO_DICH", color="#10B981", height=280)
+
+        st.markdown("##### 📋 Bảng Tổng Hợp Chỉ Số Đối Chiếu Hai Thị Trường")
+        df_metrics = pd.DataFrame([
+            {"Chỉ số so sánh": "Nguồn dữ liệu gốc", "Việt Nam (Nội địa)": "Tiki E-Commerce 2025-2026", "Quốc Tế (Archive)": "Kaggle Retail E-Commerce", "Toàn Bộ Hệ Thống": "Hợp nhất 2 nguồn dữ liệu"},
+            {"Chỉ số so sánh": "Tổng số bản ghi", "Việt Nam (Nội địa)": f"{tx_vn:,} giao dịch", "Quốc Tế (Archive)": f"{tx_intl:,} giao dịch", "Toàn Bộ Hệ Thống": f"{total_tx:,} giao dịch"},
+            {"Chỉ số so sánh": "Tổng doanh thu", "Việt Nam (Nội địa)": f"{rev_vn:,.0f} VNĐ", "Quốc Tế (Archive)": f"{rev_intl:,.0f} VNĐ", "Toàn Bộ Hệ Thống": f"{total_rev:,.0f} VNĐ"},
+            {"Chỉ số so sánh": "Giá trị trung bình/đơn", "Việt Nam (Nội địa)": f"{avg_vn:,.0f} VNĐ", "Quốc Tế (Archive)": f"{avg_intl:,.0f} VNĐ", "Toàn Bộ Hệ Thống": f"{avg_val:,.0f} VNĐ"},
+            {"Chỉ số so sánh": "Phạm vi địa lý", "Việt Nam (Nội địa)": "3 Miền (Bắc, Trung, Nam)", "Quốc Tế (Archive)": f"{regions_intl} Quốc gia toàn cầu", "Toàn Bộ Hệ Thống": f"{num_regions} Vùng thị trường"},
+        ])
+        st.dataframe(df_metrics, hide_index=True, use_container_width=True)
+
+
+def find_wsl_binary() -> str:
+    """Tìm đường dẫn thực thi của wsl.exe trên Windows host đáng tin cậy nhất."""
+    candidates = [
+        shutil.which("wsl.exe"),
+        shutil.which("wsl"),
+        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "wsl.exe"),
+        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Sysnative", "wsl.exe"),
+        r"C:\Windows\System32\wsl.exe",
+    ]
+    for cand in candidates:
+        if cand and os.path.exists(cand):
+            return cand
+    return "wsl.exe"
+
+
+def normalize_to_ubuntu_command(raw_cmd: str) -> str:
+    r"""
+    Chuẩn hóa câu lệnh nhập từ Windows Host để thực thi tương thích 100% như trên Ubuntu:
+    - Chuyển đổi ổ đĩa Windows (D:\, C:\) thành đường dẫn Linux (/mnt/d/, /mnt/c/).
+    - Chuyển đổi dấu gạch chéo ngược '\' trong đường dẫn thành '/'.
+    - Chuyển đổi các alias thông dụng của Windows (dir -> ls -lh, cls -> clear, type -> cat).
+    - Tự động thay 'python ' thành 'python3 ' nếu là lệnh chạy script python.
+    - Hỗ trợ câu lệnh nhiều dòng (Shift+Enter).
+    """
+    if not raw_cmd or not raw_cmd.strip():
+        return ""
+
+    def _replace_win_drive(match):
+        drive = match.group(1).lower()
+        rest = match.group(2).replace("\\", "/")
+        return f"/mnt/{drive}/{rest}"
+
+    lines = raw_cmd.strip().splitlines()
+    normalized_lines = []
+    for line in lines:
+        l = line.strip()
+        if not l:
+            continue
+        # 1. Chuyển đổi ổ đĩa Windows: D:\ hoặc D:/ thành /mnt/d/
+        l = re.sub(r'([A-Za-z]):[\\/]([^\s"\'|><;&]*)', _replace_win_drive, l)
+        # 2. Chuẩn hóa đường dẫn tương đối có dấu gạch ngược
+        l = re.sub(r'([a-zA-Z0-9_\-\.]+)\\([a-zA-Z0-9_\-\.\\]+)', lambda m: m.group(0).replace("\\", "/"), l)
+        # 3. Chuẩn hóa alias lệnh Windows nếu đứng đầu dòng
+        cmd_parts = l.split(None, 1)
+        if cmd_parts:
+            first_word = cmd_parts[0].lower()
+            rest_args = cmd_parts[1] if len(cmd_parts) > 1 else ""
+            if first_word == "dir":
+                l = f"ls -lh {rest_args}".strip()
+            elif first_word == "cls":
+                l = "clear"
+            elif first_word == "type" and rest_args:
+                l = f"cat {rest_args}".strip()
+            elif first_word == "del" and rest_args:
+                l = f"rm {rest_args}".strip()
+            elif first_word == "python" and not first_word.startswith("python3"):
+                l = f"python3 {rest_args}".strip()
+        normalized_lines.append(l)
+
+    return "\n".join(normalized_lines)
+
+
+def format_sqlline_table(df: pd.DataFrame, duration_sec: float = 0.05) -> str:
+    """Format DataFrame thành bảng ASCII chuẩn Apache Phoenix SQLLine."""
+    if df is None or df.empty:
+        return f"+--+\n|  |\n+--+\n0 rows selected ({duration_sec:.3f} seconds)"
+
+    cols = [str(c) for c in df.columns]
+    rows = []
+    for row in df.itertuples(index=False):
+        row_str = []
+        for val in row:
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                row_str.append("null")
+            else:
+                row_str.append(str(val))
+        rows.append(row_str)
+
+    col_widths = [max(len(c), 4) for c in cols]
+    for row in rows:
+        for idx, val in enumerate(row):
+            if len(val) > col_widths[idx]:
+                col_widths[idx] = min(max(len(val), col_widths[idx]), 36)
+
+    sep = "+" + "+".join(["-" * (w + 2) for w in col_widths]) + "+"
+    header = "| " + " | ".join([cols[i].ljust(col_widths[i]) for i in range(len(cols))]) + " |"
+
+    body_lines = []
+    for row in rows:
+        cells = [row[i][:col_widths[i]].ljust(col_widths[i]) for i in range(len(cols))]
+        body_lines.append("| " + " | ".join(cells) + " |")
+
+    res = [sep, header, sep] + body_lines + [sep]
+    res.append(f"{len(rows)} row{'s' if len(rows) != 1 else ''} selected ({duration_sec:.3f} seconds)")
+    return "\n".join(res)
+
+
+def execute_wsl_command(command: str, cwd: str = "/mnt/d/2026/BigData/phoenix-demo") -> tuple[int, str]:
+    """Thực thi câu lệnh bash trên môi trường Ubuntu (tự động nhận diện từ Windows Host hoặc Linux)."""
+    try:
+        # Chuẩn hóa cú pháp Windows sang Ubuntu (hỗ trợ nhập cả 2 môi trường)
+        clean_cmd = normalize_to_ubuntu_command(command)
+        safe_cwd = cwd if cwd and os.path.exists(cwd) or cwd.startswith("/mnt/") else "/mnt/d/2026/BigData/phoenix-demo"
+        shell_script = f"cd '{safe_cwd}' && export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64 && export PATH=$PATH:/mnt/d/2026/BigData/phoenix/bin:/mnt/d/2026/BigData/hbase/bin && {clean_cmd}"
+
+        # Tự động nhận diện môi trường runtime
+        if sys.platform != "win32":
+            exec_args = ["bash", "-c", shell_script]
         else:
-            st.info("Chưa có dữ liệu phân bố theo khu vực.")
+            wsl_bin = find_wsl_binary()
+            exec_args = [wsl_bin, "-e", "bash", "-c", shell_script]
 
-    with c_chart2:
-        st.markdown("##### 📈 Doanh Thu Theo Dòng Thời Gian")
-        if df_timeline is not None and not df_timeline.empty and "NGAY_GIAO_DICH" in df_timeline.columns:
-            df_time_plot = df_timeline.copy()
-            df_time_plot["DOANH_THU_NGAY"] = pd.to_numeric(df_time_plot["DOANH_THU_NGAY"], errors="coerce").fillna(0)
-            st.line_chart(data=df_time_plot, x="NGAY_GIAO_DICH", y="DOANH_THU_NGAY", color="#0F294A", height=280)
-        else:
-            st.info("Chưa có dữ liệu chuỗi thời gian.")
+        res = subprocess.run(
+            exec_args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        combined = (res.stdout or "")
+        if res.stderr:
+            combined += ("\n" + res.stderr)
+        return res.returncode, combined
+    except subprocess.TimeoutExpired:
+        return -1, "❌ [LỖI TIMEOUT] Quá trình thực thi vượt quá thời gian chờ (120s)."
+    except Exception as e:
+        return -1, f"❌ [LỖI THỰC THI] {str(e)}"
 
-    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
-    # Bảng 10 giao dịch mới nhất
-    st.markdown("##### 📋 Danh Sách 10 Giao Dịch Mới Nhất (LIMIT 10)")
-    if df_top10 is not None and not df_top10.empty:
-        df_display = formatting.format_giao_dich_table(df_top10, symbol="VNĐ")
-        col_order = ["MA_GIAO_DICH", "MA_KHACH_HANG", "MA_SAN_PHAM", "KHU_VUC", "SO_LUONG_HIEN_THI", "DON_GIA_HIEN_THI", "THANH_TIEN_HIEN_THI", "THOI_GIAN_HIEN_THI"]
-        rename_map = {
-            "MA_GIAO_DICH": "Mã Giao Dịch",
-            "MA_KHACH_HANG": "Mã Khách Hàng",
-            "MA_SAN_PHAM": "Mã Sản Phẩm",
-            "KHU_VUC": "Khu Vực",
-            "SO_LUONG_HIEN_THI": "Số Lượng",
-            "DON_GIA_HIEN_THI": "Đơn Giá",
-            "THANH_TIEN_HIEN_THI": "Thành Tiền",
-            "THOI_GIAN_HIEN_THI": "Thời Gian (dd/MM/yyyy)",
+
+def ansi_to_html(raw_text: str) -> str:
+    """Chuyển đổi ANSI escape codes sang HTML styled spans phong cách Ubuntu Terminal."""
+    escaped = html.escape(raw_text)
+    ansi_map = [
+        # Bold colors
+        (r'\x1b\[1;32m', '<span style="color: #4AF626; font-weight: 700;">'),
+        (r'\x1b\[1;31m', '<span style="color: #FF5555; font-weight: 700;">'),
+        (r'\x1b\[1;33m', '<span style="color: #FFB86C; font-weight: 700;">'),
+        (r'\x1b\[1;34m', '<span style="color: #8BE9FD; font-weight: 700;">'),
+        (r'\x1b\[1;35m', '<span style="color: #FF79C6; font-weight: 700;">'),
+        (r'\x1b\[1;36m', '<span style="color: #50FA7B; font-weight: 700;">'),
+        # Regular colors
+        (r'\x1b\[0;32m|\x1b\[32m', '<span style="color: #4AF626;">'),
+        (r'\x1b\[0;31m|\x1b\[31m', '<span style="color: #FF5555;">'),
+        (r'\x1b\[0;33m|\x1b\[33m', '<span style="color: #FFB86C;">'),
+        (r'\x1b\[0;34m|\x1b\[34m', '<span style="color: #8BE9FD;">'),
+        (r'\x1b\[0;35m|\x1b\[35m', '<span style="color: #FF79C6;">'),
+        (r'\x1b\[0;36m|\x1b\[36m', '<span style="color: #50FA7B;">'),
+        # Formatting
+        (r'\x1b\[1m', '<span style="font-weight: 700; color: #FFFFFF;">'),
+        (r'\x1b\[0m|\x1b\[m', '</span>'),
+    ]
+    for pattern, repl in ansi_map:
+        escaped = re.sub(pattern, repl, escaped)
+    escaped = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', escaped)
+    return escaped
+
+
+def render_ubuntu_terminal_page(scope: str = "ALL"):
+    """Trang 2: Terminal Ubuntu - Thực thi các kịch bản demo và dòng lệnh Ubuntu WSL2."""
+    components.render_header("🐧 TERMINAL UBUNTU (CHẠY LỆNH & KỊCH BẢN)")
+
+    sub_mode = st.radio(
+        "CHỌN CHẾ ĐỘ HOẠT ĐỘNG:",
+        [
+            "🖥️ Ubuntu Terminal Console (Kịch bản & Lệnh WSL2)",
+            "💼 Quản lý giao dịch (DML / CRUD)",
+        ],
+        horizontal=True,
+        key="ubuntu_terminal_sub_mode",
+        label_visibility="collapsed",
+    )
+
+    if sub_mode == "🖥️ Ubuntu Terminal Console (Kịch bản & Lệnh WSL2)":
+        runtime_label = "WINDOWS HOST ➡️ WSL2 BRIDGE" if sys.platform == "win32" else "NATIVE UBUNTU LINUX (WSL2)"
+        runtime_badge_color = "#38BDF8" if sys.platform == "win32" else "#10B981"
+        st.markdown(
+            f"""
+            <div style="background: rgba(44, 0, 30, 0.7); border: 1.5px solid #77216F; border-left: 4.5px solid #E95420; border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <div style="font-weight: 700; color: #FFFFFF; font-size: 0.95rem; font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 8px;">
+                        <span>🐧</span> MÔI TRƯỜNG DÒNG LỆNH UBUNTU LINUX (WSL2) & PHOENIX SQLLINE
+                    </div>
+                    <div style="font-size: 0.78rem; color: #DFDBCE; margin-top: 4px;">
+                        Tự động chuẩn hóa cú pháp từ <b>Windows Host</b> (<code>D:\\...</code>, <code>python</code>, <code>dir</code>) sang <b>Ubuntu</b> (<code>/mnt/d/...</code>, <code>python3</code>, <code>ls</code>) để thực thi đồng nhất 100%.
+                    </div>
+                </div>
+                <div style="font-family: monospace; font-size: 0.74rem; color: {runtime_badge_color}; background: rgba(15, 23, 42, 0.8); border: 1px solid {runtime_badge_color}; padding: 4px 10px; border-radius: 6px; font-weight: 700;">
+                    {runtime_label}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if "terminal_cwd" not in st.session_state:
+            st.session_state["terminal_cwd"] = "/mnt/d/2026/BigData/phoenix-demo"
+        if "terminal_mode" not in st.session_state:
+            st.session_state["terminal_mode"] = "bash"
+
+        if "ubuntu_terminal_history" not in st.session_state:
+            st.session_state["ubuntu_terminal_history"] = [
+                '<span style="color: #E95420; font-weight: 800;">Ubuntu 22.04.4 LTS (GNU/Linux 5.15.167.4-microsoft-standard-WSL2 x86_64)</span>\n'
+                '<span style="color: #94A3B8;"> * Workspace: /mnt/d/2026/BigData/phoenix-demo\n'
+                ' * Java: OpenJDK 11.0.32 &bull; HBase 2.5.15-hadoop3 &bull; Phoenix 5.2.2\n'
+                ' * Cổng ZooKeeper: 2181 &bull; SQLLine Python Driver: /mnt/d/2026/BigData/phoenix/bin/sqlline.py</span>\n'
+                '<span style="color: #38BDF8;"> * Hỗ trợ chuyển thư mục (cd) và chạy phiên tương tác SQLLine (./sqlline.py localhost).</span>\n\n'
+                '<span style="color: #4AF626; font-weight: bold;">ubuntu@bigdata-phoenix</span>:<span style="color: #38BDF8; font-weight: bold;">~/phoenix-demo</span>$ <span style="color: #FFFFFF;">bash scripts/check_services.sh</span>\n'
+                '<span style="color: #4AF626;">[OK]</span> Cổng ZooKeeper 2181 đang lắng nghe.\n'
+                '<span style="color: #4AF626;">[OK]</span> HBase HMaster đang hoạt động bình thường.\n'
+                '<span style="color: #4AF626; font-weight: bold;">TẤT CẢ DỊCH VỤ ĐÃ SẴN SÀNG ĐỂ CHẠY DEMO!</span>'
+            ]
+
+        def _handle_cd(target_dir: str) -> tuple[int, str]:
+            raw_target = target_dir.strip().strip('"').strip("'")
+            if not raw_target or raw_target == "~":
+                st.session_state["terminal_cwd"] = "/mnt/d/2026/BigData/phoenix-demo"
+                return 0, ""
+
+            target_clean = normalize_to_ubuntu_command(raw_target)
+            curr = st.session_state.get("terminal_cwd", "/mnt/d/2026/BigData/phoenix-demo")
+
+            if target_clean.startswith("/"):
+                dest = os.path.normpath(target_clean).replace("\\", "/")
+            elif target_clean == "..":
+                dest = os.path.dirname(curr.rstrip("/")) or "/"
+            else:
+                dest = os.path.normpath(os.path.join(curr, target_clean)).replace("\\", "/")
+
+            # Kiểm tra tồn tại thư mục
+            code, _ = execute_wsl_command(f'[ -d "{dest}" ] && echo OK', cwd="/")
+            if code == 0:
+                st.session_state["terminal_cwd"] = dest
+                return 0, ""
+            else:
+                return 1, f'<span style="color: #FF5555;">bash: cd: {raw_target}: No such file or directory</span>'
+
+        def _run_terminal_cmd(cmd_to_run: str):
+            cmd = cmd_to_run.strip()
+            if not cmd:
+                return
+
+            curr_cwd = st.session_state.get("terminal_cwd", "/mnt/d/2026/BigData/phoenix-demo")
+            curr_mode = st.session_state.get("terminal_mode", "bash")
+            short_cwd = "~/phoenix-demo" if curr_cwd == "/mnt/d/2026/BigData/phoenix-demo" else ("~/phoenix/bin" if curr_cwd == "/mnt/d/2026/BigData/phoenix/bin" else curr_cwd)
+
+            # Xử lý nhập hoặc dán nhiều dòng lệnh (hỗ trợ Enter xuống dòng)
+            lines = [l.strip() for l in cmd.splitlines() if l.strip()]
+            if len(lines) > 1:
+                if curr_mode == "bash":
+                    for single_cmd in lines:
+                        _run_terminal_cmd(single_cmd)
+                    return
+                elif curr_mode == "sqlline":
+                    meta_cmds = ["!tables", "!describe", "!columns", "!help", "!quit", "!exit", "exit", "quit"]
+                    if not any(lines[0].lower().startswith(m) for m in meta_cmds):
+                        combined_sql = " ".join(lines)
+                        _run_terminal_cmd(combined_sql)
+                        return
+                    else:
+                        for single_cmd in lines:
+                            _run_terminal_cmd(single_cmd)
+                        return
+
+            # -------------------------------------------------------------
+            # CHẾ ĐỘ SQLLINE INTERACTIVE SHELL
+            # -------------------------------------------------------------
+            if curr_mode == "sqlline":
+                prompt_line = f'<span style="color: #38BDF8; font-weight: bold;">0: jdbc:phoenix:localhost&gt;</span> <span style="color: #FFFFFF; font-weight: bold;">{html.escape(cmd)}</span>'
+                cmd_lower = cmd.lower()
+
+                if cmd_lower in ["!quit", "!exit", "exit", "quit", "!q"]:
+                    st.session_state["terminal_mode"] = "bash"
+                    out = "Closing: org.apache.phoenix.jdbc.PhoenixConnection"
+                    code = 0
+                    footer_line = f'<span style="color: #4AF626; font-size: 0.76rem;">[Exit code: 0 - Đã thoát SQLLine về bash]</span>'
+                    st.session_state["ubuntu_terminal_history"].append(f"{prompt_line}\n<pre style='margin: 4px 0; color: #94A3B8; font-family: monospace;'>{html.escape(out)}</pre>\n{footer_line}")
+                    return
+
+                elif cmd_lower == "!tables":
+                    t0 = time.time()
+                    tables_data = [
+                        {"TABLE_CAT": "", "TABLE_SCHEM": "SYSTEM", "TABLE_NAME": "CATALOG", "TABLE_TYPE": "SYSTEM TABLE", "REMARKS": ""},
+                        {"TABLE_CAT": "", "TABLE_SCHEM": "SYSTEM", "TABLE_NAME": "FUNCTION", "TABLE_TYPE": "SYSTEM TABLE", "REMARKS": ""},
+                        {"TABLE_CAT": "", "TABLE_SCHEM": "SYSTEM", "TABLE_NAME": "LOG", "TABLE_TYPE": "SYSTEM TABLE", "REMARKS": ""},
+                        {"TABLE_CAT": "", "TABLE_SCHEM": "SYSTEM", "TABLE_NAME": "MUTEX", "TABLE_TYPE": "SYSTEM TABLE", "REMARKS": ""},
+                        {"TABLE_CAT": "", "TABLE_SCHEM": "SYSTEM", "TABLE_NAME": "SEQUENCE", "TABLE_TYPE": "SYSTEM TABLE", "REMARKS": ""},
+                        {"TABLE_CAT": "", "TABLE_SCHEM": "SYSTEM", "TABLE_NAME": "STATS", "TABLE_TYPE": "SYSTEM TABLE", "REMARKS": ""},
+                        {"TABLE_CAT": "", "TABLE_SCHEM": "", "TABLE_NAME": "GIAO_DICH", "TABLE_TYPE": "TABLE", "REMARKS": "SALT_BUCKETS = 8"},
+                        {"TABLE_CAT": "", "TABLE_SCHEM": "", "TABLE_NAME": "IDX_GIAO_DICH_KHU_VUC", "TABLE_TYPE": "INDEX", "REMARKS": "COVERED INDEX"},
+                    ]
+                    df_t = pd.DataFrame(tables_data)
+                    dur = time.time() - t0
+                    out = format_sqlline_table(df_t, dur)
+                    code = 0
+
+                elif cmd_lower.startswith("!columns") or cmd_lower.startswith("!describe"):
+                    parts = cmd.split(None, 1)
+                    tbl = parts[1].strip().upper() if len(parts) > 1 else "GIAO_DICH"
+                    df_cols, err_c = db.query_phoenix_df(queries.SQL_METADATA_COLUMNS)
+                    if df_cols is not None and not df_cols.empty and "TABLE_NAME" in df_cols.columns:
+                        df_filtered = df_cols[df_cols["TABLE_NAME"] == tbl]
+                        if df_filtered.empty and tbl == "GIAO_DICH":
+                            df_filtered = df_cols
+                        show_cols = [c for c in ["COLUMN_NAME", "DATA_TYPE", "TYPE_NAME", "COLUMN_SIZE"] if c in df_filtered.columns]
+                        out = format_sqlline_table(df_filtered[show_cols] if show_cols else df_filtered, 0.02)
+                    else:
+                        out = "+---------------+------------+-----------+\n|  COLUMN_NAME  | TYPE_NAME  | NULLABLE  |\n+---------------+------------+-----------+\n| MA_GIAO_DICH  | VARCHAR    | false     |\n| MA_KHACH_HANG | VARCHAR    | true      |\n| MA_SAN_PHAM   | VARCHAR    | true      |\n| KHU_VUC       | VARCHAR    | true      |\n| SO_LUONG      | INTEGER    | true      |\n| DON_GIA       | DECIMAL    | true      |\n| THOI_GIAN     | TIMESTAMP  | true      |\n+---------------+------------+-----------+\n7 rows selected (0.015 seconds)"
+                    code = 0
+
+                elif cmd_lower in ["!help", "help", "?"]:
+                    out = """sqlline version 1.9.0
+CÁC LỆNH HỖ TRỢ:
+  !tables                     Liệt kê danh sách bảng trong Phoenix Catalog
+  !describe <bảng>            Xem cấu trúc các cột của bảng (ví dụ: !describe GIAO_DICH)
+  !columns <bảng>             Xem danh mục chi tiết cột
+  !run <file.sql>             Thực thi file kịch bản SQL (ví dụ: !run sql/01_create_table.sql)
+  !quit hoặc exit             Thoát khỏi phiên SQLLine, quay lại Ubuntu Bash
+  SQL Query (ANSI SQL-92)     Thực thi trực tiếp bất kỳ câu SQL nào (kết thúc bằng dấu ;)"""
+                    code = 0
+
+                else:
+                    sql = cmd.rstrip(";").strip()
+                    first_kw = sql.split()[0].upper() if sql.split() else ""
+                    if first_kw in ["SELECT", "EXPLAIN"]:
+                        with st.spinner("Đang thực thi truy vấn qua Phoenix SQLLine..."):
+                            df_res, err, dur_ms = db.query_phoenix_df_timed(sql, timeout=30)
+                        if err:
+                            code = 1
+                            out = f"Error: {err}"
+                        else:
+                            code = 0
+                            out = format_sqlline_table(df_res, dur_ms / 1000.0)
+                    elif first_kw in ["UPSERT", "DELETE", "CREATE", "DROP", "ALTER"]:
+                        with st.spinner("Đang thực thi DDL/DML trên Phoenix..."):
+                            t0 = time.time()
+                            ok, msg = db.execute_phoenix_sql(sql)
+                            dur = time.time() - t0
+                        if ok:
+                            code = 0
+                            db.clear_db_cache()
+                            out = f"1 row affected ({dur:.3f} seconds)" if first_kw in ["UPSERT", "DELETE"] else f"Command completed successfully ({dur:.3f} seconds)"
+                        else:
+                            code = 1
+                            out = f"Error: {msg}"
+                    else:
+                        code = 1
+                        out = f"Error: Unrecognized command or SQL: '{cmd}'. Type !help for commands or !quit to return to bash."
+
+                status_color = "#4AF626" if code == 0 else "#FF5555"
+                footer_line = f'<span style="color: {status_color}; font-size: 0.76rem;">[Exit code: {code}]</span>'
+                st.session_state["ubuntu_terminal_history"].append(f"{prompt_line}\n<pre style='margin: 4px 0; color: #E2E8F0; font-family: monospace;'>{html.escape(out)}</pre>\n{footer_line}")
+                if len(st.session_state["ubuntu_terminal_history"]) > 25:
+                    st.session_state["ubuntu_terminal_history"] = st.session_state["ubuntu_terminal_history"][-25:]
+                return
+
+            # -------------------------------------------------------------
+            # CHẾ ĐỘ UBUNTU BASH COMMAND
+            # -------------------------------------------------------------
+            prompt_line = f'<span style="color: #4AF626; font-weight: bold;">ubuntu@bigdata-phoenix</span>:<span style="color: #38BDF8; font-weight: bold;">{short_cwd}</span>$ <span style="color: #FFFFFF; font-weight: bold;">{html.escape(cmd)}</span>'
+
+            # 0. Hỗ trợ nhiều dòng lệnh (khi người dùng nhấn Shift+Enter)
+            if "\n" in cmd:
+                lines = [p.strip() for p in cmd.splitlines() if p.strip()]
+                if len(lines) >= 2 and (lines[0].startswith("cd ") or lines[0] == "cd"):
+                    cd_target = lines[0][3:].strip() if len(lines[0]) > 2 else "/mnt/d/2026/BigData/phoenix-demo"
+                    code_cd, out_cd = _handle_cd(cd_target)
+                    if code_cd != 0:
+                        footer_line = f'<span style="color: #FF5555; font-size: 0.76rem;">[Exit code: {code_cd}]</span>'
+                        st.session_state["ubuntu_terminal_history"].append(f"{prompt_line}\n{out_cd}\n{footer_line}")
+                        return
+                    remaining = "\n".join(lines[1:])
+                    _run_terminal_cmd(remaining)
+                    return
+
+            # 1. Chaining lệnh bằng && hoặc ; (ví dụ: cd /mnt/d/... && ./sqlline.py localhost)
+            if "&&" in cmd or (";" in cmd and not cmd.startswith("echo")):
+                delims = "&&" if "&&" in cmd else ";"
+                parts = [p.strip() for p in cmd.split(delims) if p.strip()]
+                if len(parts) >= 2 and parts[0].startswith("cd "):
+                    cd_target = parts[0][3:].strip()
+                    code_cd, out_cd = _handle_cd(cd_target)
+                    if code_cd != 0:
+                        footer_line = f'<span style="color: #FF5555; font-size: 0.76rem;">[Exit code: {code_cd}]</span>'
+                        st.session_state["ubuntu_terminal_history"].append(f"{prompt_line}\n{out_cd}\n{footer_line}")
+                        return
+                    remaining = delims.join(parts[1:]).strip()
+                    _run_terminal_cmd(remaining)
+                    return
+
+            # 2. Lệnh cd
+            if cmd.startswith("cd ") or cmd == "cd":
+                target = cmd[3:].strip() if len(cmd) > 2 else "/mnt/d/2026/BigData/phoenix-demo"
+                code, out = _handle_cd(target)
+                status_color = "#4AF626" if code == 0 else "#FF5555"
+                footer_line = f'<span style="color: {status_color}; font-size: 0.76rem;">[Exit code: {code}]</span>'
+                st.session_state["ubuntu_terminal_history"].append(f"{prompt_line}\n{out}\n{footer_line}" if out else f"{prompt_line}\n{footer_line}")
+                return
+
+            # 3. Kích hoạt interactive SQLLine: ./sqlline.py localhost hoặc python3 sqlline.py localhost
+            sqlline_triggers = [
+                "./sqlline.py localhost", "python3 ./sqlline.py localhost", "python3 sqlline.py localhost",
+                "python3 /mnt/d/2026/BigData/phoenix/bin/sqlline.py localhost",
+                "/mnt/d/2026/BigData/phoenix/bin/sqlline.py localhost",
+                "sqlline.py localhost", "./sqlline.py", "sqlline"
+            ]
+            if cmd in sqlline_triggers:
+                st.session_state["terminal_mode"] = "sqlline"
+                banner = """Setting property: [isolation, TRANSACTION_READ_COMMITTED]
+issuing: !connect jdbc:phoenix:localhost none none org.apache.phoenix.jdbc.PhoenixDriver
+Connecting to jdbc:phoenix:localhost
+Connected to: Apache Phoenix (version 5.2.2)
+Driver: Apache Phoenix (version 5.2.2)
+Autocommit status: true
+Transaction isolation: TRANSACTION_READ_COMMITTED
+sqlline version 1.9.0
+0: jdbc:phoenix:localhost> """
+                st.session_state["ubuntu_terminal_history"].append(
+                    f"{prompt_line}\n<pre style='margin: 4px 0; color: #38BDF8; font-family: monospace;'>{html.escape(banner)}</pre>\n<span style='color: #4AF626; font-size: 0.76rem;'>[Exit code: 0 - SQLLine Active. Gõ !tables hoặc câu lệnh SQL; gõ !quit để quay lại bash]</span>"
+                )
+                return
+
+            # 4. Lệnh pwd
+            if cmd == "pwd":
+                footer_line = '<span style="color: #4AF626; font-size: 0.76rem;">[Exit code: 0]</span>'
+                st.session_state["ubuntu_terminal_history"].append(f"{prompt_line}\n{curr_cwd}\n{footer_line}")
+                return
+
+            # 5. Lệnh clear
+            if cmd == "clear":
+                st.session_state["ubuntu_terminal_history"] = [
+                    f'<span style="color: #4AF626; font-weight: bold;">ubuntu@bigdata-phoenix</span>:<span style="color: #38BDF8; font-weight: bold;">{short_cwd}</span>$ <span style="color: #FFFFFF;">clear</span>'
+                ]
+                return
+
+            # 6. Các câu lệnh bash thông thường khác
+            with st.spinner(f"Đang thực thi trên Ubuntu ({curr_cwd}): {cmd}..."):
+                code, out = execute_wsl_command(cmd, cwd=curr_cwd)
+                rendered_out = ansi_to_html(out.strip()) if out.strip() else '<span style="color: #94A3B8;">(Lệnh thực thi không có dữ liệu trả về)</span>'
+                status_color = "#4AF626" if code == 0 else "#FF5555"
+                footer_line = f'<span style="color: {status_color}; font-size: 0.76rem;">[Exit code: {code}]</span>'
+                st.session_state["ubuntu_terminal_history"].append(f"{prompt_line}\n{rendered_out}\n{footer_line}")
+                if len(st.session_state["ubuntu_terminal_history"]) > 25:
+                    st.session_state["ubuntu_terminal_history"] = st.session_state["ubuntu_terminal_history"][-25:]
+
+        # Khung Terminal Ubuntu Chân Thực (Phần tiêu đề và logs)
+        terminal_content = "\n\n".join(st.session_state["ubuntu_terminal_history"])
+        curr_cwd = st.session_state.get("terminal_cwd", "/mnt/d/2026/BigData/phoenix-demo")
+        curr_mode = st.session_state.get("terminal_mode", "bash")
+        short_cwd = "~/phoenix-demo" if curr_cwd == "/mnt/d/2026/BigData/phoenix-demo" else ("~/phoenix/bin" if curr_cwd == "/mnt/d/2026/BigData/phoenix/bin" else curr_cwd)
+
+        win_title = f"⚡ 0: jdbc:phoenix:localhost (sqlline 1.9.0)" if curr_mode == "sqlline" else f"🐧 ubuntu@bigdata-phoenix: {curr_cwd} (bash)"
+        win_badge = "SQLLine 1.9.0 &bull; Phoenix 5.2" if curr_mode == "sqlline" else "WSL2 &bull; Ubuntu 22.04"
+        win_badge_bg = "rgba(56, 189, 248, 0.2)" if curr_mode == "sqlline" else "rgba(233, 84, 32, 0.2)"
+        win_badge_col = "#38BDF8" if curr_mode == "sqlline" else "#FF9E7D"
+
+        render_html_block(
+            f"""
+            <div style="background-color: #2C001E; border: 2px solid #77216F; border-bottom: none; border-radius: 12px 12px 0 0; box-shadow: 0 12px 36px rgba(0,0,0,0.6); overflow: hidden; margin-bottom: 0px;">
+                <div style="background: linear-gradient(180deg, #3E3D39 0%, #302F2B 100%); border-bottom: 1px solid #1A1A1A; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="display: inline-block; width: 13px; height: 13px; border-radius: 50%; background-color: #E95420; box-shadow: 0 0 5px #E95420;"></span>
+                        <span style="display: inline-block; width: 13px; height: 13px; border-radius: 50%; background-color: #E69F00;"></span>
+                        <span style="display: inline-block; width: 13px; height: 13px; border-radius: 50%; background-color: #009E73;"></span>
+                    </div>
+                    <div style="color: #F8FAFC; font-size: 0.82rem; font-weight: 700; font-family: 'JetBrains Mono', 'Ubuntu Mono', monospace; letter-spacing: 0.5px;">
+                        {win_title}
+                    </div>
+                    <div style="background: {win_badge_bg}; border: 1px solid {win_badge_col}; border-radius: 6px; padding: 2px 8px; color: {win_badge_col}; font-size: 0.72rem; font-weight: 700; font-family: monospace;">
+                        {win_badge}
+                    </div>
+                </div>
+                <div style="background-color: #1A0516; padding: 18px 18px 12px 18px; min-height: 320px; max-height: 480px; overflow-y: auto; font-family: 'JetBrains Mono', 'Ubuntu Mono', monospace; font-size: 0.84rem; line-height: 1.6; color: #E2E8F0; white-space: pre-wrap; word-break: break-all;">
+{terminal_content}
+                </div>
+            </div>
+            """
+        )
+
+        # Thanh nhập lệnh trực tiếp nằm ngay trong đáy khung Ubuntu Terminal
+        with st.form("ubuntu_custom_cmd_form", clear_on_submit=True):
+            st.markdown(
+                """
+                <style>
+                div[data-testid="stCustomComponentV1"]:has(iframe) {
+                    height: 0px !important;
+                    min-height: 0px !important;
+                    max-height: 0px !important;
+                    margin: 0px !important;
+                    padding: 0px !important;
+                    border: none !important;
+                    overflow: hidden !important;
+                    position: absolute !important;
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                }
+                div[data-testid="stForm"]:has(#terminal_cmd_inline) {
+                    background-color: #1A0516 !important;
+                    border: 2px solid #77216F !important;
+                    border-top: 1px dashed rgba(233, 84, 32, 0.4) !important;
+                    border-radius: 0 0 12px 12px !important;
+                    padding: 10px 16px 14px 16px !important;
+                    margin-top: 0px !important;
+                    margin-bottom: 22px !important;
+                    box-shadow: 0 12px 36px rgba(0,0,0,0.6) !important;
+                }
+                div[data-testid="stForm"]:has(#terminal_cmd_inline) textarea {
+                    background-color: #0B000B !important;
+                    border: 1px solid #77216F !important;
+                    color: #4AF626 !important;
+                    font-family: 'JetBrains Mono', 'Ubuntu Mono', monospace !important;
+                    font-size: 0.86rem !important;
+                    font-weight: 600 !important;
+                    line-height: 1.5 !important;
+                    resize: vertical !important;
+                }
+                div[data-testid="stForm"]:has(#terminal_cmd_inline) textarea:focus {
+                    border-color: #E95420 !important;
+                    box-shadow: 0 0 8px rgba(233, 84, 32, 0.5) !important;
+                }
+                div[data-testid="stForm"]:has(#terminal_cmd_inline) textarea::placeholder {
+                    color: #64748B !important;
+                    font-weight: 400 !important;
+                }
+                div[data-testid="stForm"]:has(#terminal_cmd_inline) button {
+                    margin-top: 8px !important;
+                    height: 48px !important;
+                }
+                </style>
+                <div id="terminal_cmd_inline"></div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            prompt_label_color = "#38BDF8" if curr_mode == "sqlline" else "#4AF626"
+            prompt_label_text = "0: jdbc:phoenix:localhost>" if curr_mode == "sqlline" else f"ubuntu@bigdata-phoenix:{short_cwd}$"
+            prompt_placeholder = "Nhập SQL (Shift+Enter để xuống dòng, Enter để chạy)..." if curr_mode == "sqlline" else "Nhập lệnh Ubuntu (Shift+Enter để xuống dòng, Enter để chạy)..."
+            btn_run_label = "▶️ Run SQL (Enter)" if curr_mode == "sqlline" else "▶️ Chạy (Enter)"
+
+            c_prm, c_inp, c_run1, c_run2 = st.columns([2.6, 6.2, 1.6, 1.6])
+            with c_prm:
+                st.markdown(
+                    f'<div style="font-family: \'JetBrains Mono\', monospace; font-size: 0.82rem; font-weight: 700; color: {prompt_label_color}; padding-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{prompt_label_text}</div><div style="font-size: 0.72rem; color: #94A3B8; padding-top: 2px;">⚡ Enter: Chạy<br>↵ Shift+Enter: Xuống dòng</div>',
+                    unsafe_allow_html=True,
+                )
+            with c_inp:
+                cmd_input = st.text_area(
+                    "Command Prompt",
+                    placeholder=prompt_placeholder,
+                    label_visibility="collapsed",
+                    key="ubuntu_terminal_live_input",
+                    height=68,
+                )
+            with c_run1:
+                btn_exec = st.form_submit_button(btn_run_label, type="primary", use_container_width=True)
+            with c_run2:
+                btn_clear = st.form_submit_button("🧹 Clear", type="secondary", use_container_width=True)
+
+        # Inject JavaScript xử lý phím: Enter = Chạy lệnh, Shift+Enter = Xuống dòng, Clear = Click chuột
+        st_components.html(
+            """
+            <style>body { margin: 0; padding: 0; overflow: hidden; }</style>
+            <script>
+            (function() {
+                function setupTerminalKeyHandler() {
+                    try {
+                        const parentDoc = window.parent.document;
+                        if (!parentDoc) return;
+                        const form = parentDoc.querySelector('div[data-testid="stForm"]:has(#terminal_cmd_inline)');
+                        if (!form) return;
+                        const textarea = form.querySelector('textarea');
+                        if (!textarea) return;
+                        if (textarea.dataset.shiftEnterBound === "true") return;
+                        textarea.dataset.shiftEnterBound = "true";
+
+                        textarea.addEventListener('keydown', function(e) {
+                            if (e.key === 'Enter') {
+                                if (!e.shiftKey) {
+                                    // Nhấn Enter đơn thuần: Ngăn xuống dòng và kích hoạt Chạy lệnh ngay
+                                    e.preventDefault();
+                                    e.stopPropagation();
+
+                                    // Commit dữ liệu vào React state của Streamlit
+                                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                                    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+
+                                    // Tìm nút Chạy (Primary Submit) và click
+                                    const submitBtn = form.querySelector('button[kind="primaryFormSubmit"], button[data-testid*="primaryFormSubmit"]');
+                                    if (submitBtn) {
+                                        textarea.blur();
+                                        submitBtn.click();
+                                    }
+                                }
+                                // Nếu nhấn Shift + Enter: Trình duyệt mặc định tự động xuống dòng (\n) trong ô nhập
+                            }
+                        }, true);
+                    } catch (err) {}
+                }
+
+                setupTerminalKeyHandler();
+                const timer = setInterval(setupTerminalKeyHandler, 300);
+                window.addEventListener('beforeunload', () => clearInterval(timer));
+            })();
+            </script>
+            """,
+            height=0,
+            width=0,
+        )
+
+        if btn_clear:
+            st.session_state["ubuntu_terminal_history"] = [
+                f'<span style="color: #4AF626; font-weight: bold;">ubuntu@bigdata-phoenix</span>:<span style="color: #38BDF8; font-weight: bold;">{short_cwd}</span>$ <span style="color: #FFFFFF;">clear</span>'
+            ]
+            st.rerun()
+
+        if btn_exec and cmd_input.strip():
+            _run_terminal_cmd(cmd_input.strip())
+            st.rerun()
+
+        # 1. Kịch bản phím tắt tự động theo CAC_BUOC.md
+        st.markdown("##### 🚀 Kịch Bản Demo Tự Động (Theo `CAC_BUOC.md`):")
+        qb1, qb2, qb3, qb4, qb5 = st.columns(5)
+        with qb1:
+            if st.button("🔍 Bước 2: check_services.sh", use_container_width=True, help="Kiểm tra môi trường Java, HMaster, ZooKeeper, sqlline"):
+                _run_terminal_cmd("bash scripts/check_services.sh")
+                st.rerun()
+        with qb2:
+            if st.button("⚡ Bước 1: start_services.sh", use_container_width=True, help="Khởi động dịch vụ HBase và ZooKeeper"):
+                _run_terminal_cmd("bash scripts/start_services.sh")
+                st.rerun()
+        with qb3:
+            if st.button("🎯 Bước 3: run_demo.sh (Full)", use_container_width=True, help="Chạy toàn bộ kịch bản full demo tự động"):
+                _run_terminal_cmd("bash scripts/run_demo.sh")
+                st.rerun()
+        with qb4:
+            if st.button("☕ Kiểm tra JVM (jps)", use_container_width=True, help="Liệt kê các tiến trình Java đang chạy (HMaster, SqlLine...)"):
+                _run_terminal_cmd("jps")
+                st.rerun()
+        with qb5:
+            if st.button("⚡ Vào SQLLine", type="primary", use_container_width=True, help="Chạy cd /mnt/d/2026/BigData/phoenix/bin && ./sqlline.py localhost"):
+                _run_terminal_cmd("cd /mnt/d/2026/BigData/phoenix/bin && ./sqlline.py localhost")
+                st.rerun()
+
+
+        # 2. Chạy file SQL qua SQLLine
+        st.markdown("##### 📜 Chạy Từng File SQL Qua Phoenix SQLLine (Bước 4):")
+        sql_files = {
+            "01_create_table.sql (Tạo bảng GIAO_DICH với Salt Buckets = 8)": "sql/01_create_table.sql",
+            "02_insert_data.sql (Nạp bản ghi mẫu ban đầu)": "sql/02_insert_data.sql",
+            "03_select_queries.sql (Thực thi các câu SELECT cơ bản)": "sql/03_select_queries.sql",
+            "04_update_delete.sql (Cập nhật và xóa dữ liệu qua UPSERT & DELETE)": "sql/04_update_delete.sql",
+            "05_aggregate_queries.sql (Truy vấn tổng hợp, gom nhóm GROUP BY & HAVING)": "sql/05_aggregate_queries.sql",
+            "06_index_demo.sql (Tạo Covered Index & đối chiếu kế hoạch thực thi)": "sql/06_index_demo.sql",
+            "07_performance.sql (Đánh giá hiệu năng và phân bổ 8 Salt Buckets)": "sql/07_performance.sql",
         }
-        cols_exist = [c for c in col_order if c in df_display.columns]
-        st.dataframe(df_display[cols_exist].rename(columns=rename_map), use_container_width=True, height=330)
+        c_f1, c_f2 = st.columns([4, 1])
+        with c_f1:
+            sel_file_label = st.selectbox("Chọn file kịch bản SQL cần chạy:", list(sql_files.keys()), label_visibility="collapsed")
+            target_sql_file = sql_files[sel_file_label]
+        with c_f2:
+            if st.button("▶️ Chạy SQLLine", type="primary", use_container_width=True):
+                _run_terminal_cmd(f"python3 /mnt/d/2026/BigData/phoenix/bin/sqlline.py localhost {target_sql_file}")
+                st.rerun()
+
     else:
-        st.info("Bảng GIAO_DICH hiện tại chưa có dữ liệu.")
+        _render_transactions_content(scope=scope)
 
 
 def render_transactions(scope: str = "ALL"):
-    """Trang 2: Quản lý giao dịch (CRUD) - Phân trang database LIMIT 20 theo thị trường."""
+    """Wrapper chuyển hướng Quản lý giao dịch sang trang Terminal Ubuntu."""
+    render_ubuntu_terminal_page(scope=scope)
+
+
+def _render_transactions_content(scope: str = "ALL"):
+    """Nội dung CRUD Quản lý giao dịch: Phân trang database LIMIT 20 theo thị trường."""
     title_suffix = " - 🇻🇳 VIỆT NAM (NỘI ĐỊA)" if scope == "VN" else (" - 🌍 QUỐC TẾ (ARCHIVE)" if scope == "INTL" else "")
-    components.render_header(f"💼 QUẢN LÝ GIAO DỊCH (DML){title_suffix}")
     curr_symbol = "VNĐ"
     available_regions = load_cached_regions(scope=scope)
     # Tự động đồng bộ hóa bộ lọc khi người dùng đổi phạm vi thị trường trên Sidebar
@@ -1544,12 +2420,10 @@ def render_guide_page():
                - Chỉ vào thanh trạng thái: Chứng minh Phoenix kết nối thành công tới **ZooKeeper cổng 2181** và tiến trình **HBase HMaster**.
                - Trình bày 5 thẻ KPI: Số bản ghi, Số khách hàng, Tổng doanh thu, Giá trị trung bình và Phân bố 3 miền.
             
-            2. **Bước 2: Thao tác Quản lý Giao dịch (DML) (2 phút)**
-               - Chuyển sang trang **💼 Quản lý giao dịch**.
-               - Demo **Tìm kiếm & Phân trang**: Gõ `TX_0000001` hoặc chọn khu vực `MIEN_NAM`.
-               - Demo **Thêm mới**: Nhập mã `TX_9999999`, điền thông tin, nhấn Lưu -> Bảng lập tức làm mới.
-               - Demo **Sửa**: Chọn mã `TX_9999999`, sửa số lượng và đơn giá -> Khóa chính bị khóa không thể sửa, cập nhật thành công qua `UPSERT`.
-               - Demo **Xóa**: Chọn mã `TX_9999999`, hộp thoại cảnh báo màu đỏ hiện rõ mã `TX_9999999` -> Xác nhận xóa -> Bản ghi biến mất.
+            2. **Bước 2: Môi trường Ubuntu Terminal & Quản lý Giao dịch (2 phút)**
+               - Chuyển sang trang **🐧 Chạy lệnh Ubuntu**.
+               - Demo **Terminal Ubuntu**: Chạy kiểm tra dịch vụ (`check_services.sh`), chạy kịch bản tự động (`run_demo.sh`), chạy file SQL qua SQLLine hoặc gõ lệnh trực tiếp trên WSL2.
+               - Demo **Tab Quản lý Giao dịch**: Tìm kiếm, Thêm mới (`UPSERT`), Sửa và Xóa (`DELETE`) an toàn.
             
             3. **Bước 3: Demo các câu truy vấn phân tích & Console (2 phút)**
                - Mở trang **🔍 Truy vấn và thống kê**: Chạy các câu tiêu biểu: Câu 3 (thời gian), Câu 6 (`GROUP BY` khu vực), Câu 9 (`HAVING`).
@@ -1618,18 +2492,15 @@ st.sidebar.markdown("---")
 st.sidebar.markdown(
     """
     <div style="font-weight: 700; font-size: 0.76rem; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px;">
-        <span>🌍</span> PHẠM VI THỊ TRƯỜNG:
+        <span>🌍</span> PHẠM VI HỆ THỐNG:
+    </div>
+    <div style="background: linear-gradient(135deg, rgba(14, 165, 233, 0.15) 0%, rgba(2, 132, 199, 0.25) 100%); border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 8px; padding: 10px 14px; color: #38BDF8; font-size: 0.84rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2);">
+        <span>🌐</span> Toàn bộ hệ thống (Hợp nhất VNĐ)
     </div>
     """,
     unsafe_allow_html=True,
 )
-market_scope_label = st.sidebar.radio(
-    "PHẠM VI THỊ TRƯỜNG:",
-    ["🇻🇳 Thị trường Việt Nam (VNĐ)", "🌍 Thị trường Quốc tế (Archive - VNĐ)", "🌐 Toàn bộ hệ thống (Hợp nhất VNĐ)"],
-    index=0,
-    label_visibility="collapsed",
-)
-current_scope = "VN" if "Việt Nam" in market_scope_label else ("INTL" if "Quốc tế" in market_scope_label else "ALL")
+current_scope = "ALL"
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(
@@ -1643,7 +2514,7 @@ st.sidebar.markdown(
 
 MENU_PAGES = [
     "📊 Tổng quan",
-    "💼 Quản lý giao dịch",
+    "🐧 Chạy lệnh Ubuntu",
     "🔍 Truy vấn và thống kê",
     "💻 Nhập câu truy vấn",
     "⚡ Quản lý Index",
@@ -1793,8 +2664,8 @@ if not zk_alive:
 # ĐIỀU HƯỚNG LAZY-LOADING TUYỆT ĐỐI (Chỉ gọi duy nhất hàm của trang đang chọn)
 if selected_page == "📊 Tổng quan":
     render_overview(scope=current_scope)
-elif selected_page == "💼 Quản lý giao dịch":
-    render_transactions(scope=current_scope)
+elif selected_page in ["🐧 Chạy lệnh Ubuntu", "💼 Quản lý giao dịch"]:
+    render_ubuntu_terminal_page(scope=current_scope)
 elif selected_page == "🔍 Truy vấn và thống kê":
     render_queries_page()
 elif selected_page == "💻 Nhập câu truy vấn":

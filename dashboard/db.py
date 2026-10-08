@@ -37,7 +37,7 @@ _GLOBAL_CONNECTION = None
 # Bộ đệm dữ liệu truy vấn in-memory siêu tốc (Thread-safe, TTL 30 phút)
 _QUERY_CACHE: dict[str, tuple[float, any]] = {}
 _CACHE_LOCK = threading.Lock()
-_CACHE_TTL = 1800.0
+_CACHE_TTL = 86400.0  # Bộ đệm dữ liệu truy vấn in-memory 24 giờ (xóa tức thì khi UPSERT/DELETE/Làm mới)
 
 
 def clear_db_cache():
@@ -61,24 +61,24 @@ def _set_cached_query(key: str, val: any):
         _QUERY_CACHE[key] = (time.time(), val)
 
 
-def is_zookeeper_alive(host: str = ZOOKEEPER_HOST, port: int = ZOOKEEPER_PORT, timeout: float = 0.5, force: bool = False) -> bool:
+def is_zookeeper_alive(host: str = ZOOKEEPER_HOST, port: int = ZOOKEEPER_PORT, timeout: float = 0.15, force: bool = False) -> bool:
     """
     Kiểm tra nhanh cổng ZooKeeper 2181 xem có mở hay không.
     Ưu tiên tuyệt đối: Nếu bridge persistent đang hoạt động khỏe mạnh, ZooKeeper chắc chắn Online (trả về tức thì 0.0001s).
-    Tự động đệm kết quả 60 giây để loại bỏ lag do socket timeout hoặc spawn tiến trình WSL.
+    Tự động đệm kết quả 300 giây (5 phút) để loại bỏ lag do socket timeout.
     """
     global _ZK_CACHE_TIME, _ZK_CACHE_STATUS, _GLOBAL_CONNECTION
     now = time.time()
 
-    # 1. Nếu tiến trình Persistent SQLLine Bridge đang chạy khỏe mạnh, kết nối chắc chắn sống
+    # 1. Nếu tiến trình Persistent SQLLine Bridge đang chạy khỏe mạnh, kết nối chắc chắn sống (0 ms)
     if not force and _GLOBAL_CONNECTION is not None and getattr(_GLOBAL_CONNECTION, "_proc", None) is not None:
         if _GLOBAL_CONNECTION._proc.poll() is None:
             _ZK_CACHE_STATUS = True
             _ZK_CACHE_TIME = now
             return True
 
-    # 2. Sử dụng kết quả cache trong 60 giây nếu còn hạn
-    if not force and (now - _ZK_CACHE_TIME < 60.0):
+    # 2. Sử dụng kết quả cache trong 300 giây nếu còn hạn (0 ms)
+    if not force and (now - _ZK_CACHE_TIME < 300.0):
         return _ZK_CACHE_STATUS
 
     alive = False
@@ -87,17 +87,6 @@ def is_zookeeper_alive(host: str = ZOOKEEPER_HOST, port: int = ZOOKEEPER_PORT, t
             alive = True
     except (OSError, socket.timeout):
         pass
-
-    if not alive and sys.platform == "win32":
-        try:
-            res = subprocess.run(
-                ["wsl", "-e", "bash", "-c", f"exec 3<>/dev/tcp/{host}/{port} && exec 3>&-"],
-                timeout=1.0,
-                capture_output=True,
-            )
-            alive = (res.returncode == 0)
-        except Exception:
-            alive = False
 
     _ZK_CACHE_TIME = now
     _ZK_CACHE_STATUS = alive
@@ -616,7 +605,6 @@ def query_batch_dfs(sql_list: list[str], timeout: int = 35) -> tuple[list[pd.Dat
             return dfs, None, cur.execution_time_ms
     except Exception as e:
         return [], format_db_error(str(e)), 0.0
-        return [], format_db_error(str(e)), 0.0
 
 
 def check_table_exists(table_name: str = "GIAO_DICH") -> bool:
@@ -643,3 +631,18 @@ def get_all_indexes(data_table: str = "GIAO_DICH") -> list[dict]:
     if df is not None and not df.empty:
         return df.to_dict(orient="records")
     return []
+
+
+def prewarm_in_background():
+    """Khởi động sẵn SQLLine Persistent Bridge trong background thread để người dùng không bị đợi."""
+    def _worker():
+        try:
+            get_active_connection()
+        except Exception:
+            pass
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+
+# Tự động pre-warm kết nối trong nền khi khởi động
+prewarm_in_background()

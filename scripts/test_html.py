@@ -1,11 +1,12 @@
-import urllib.request
-import re
+import streamlit as st
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dashboard"))
 
-req = urllib.request.Request("http://127.0.0.1:8501", headers={"User-Agent": "Mozilla/5.0"})
-try:
-    with urllib.request.urlopen(req) as resp:
-        html = resp.read().decode("utf-8")
-        print("Length:", len(html))
-        print("Title in HTML:", re.findall(r"<title>.*?</title>", html))
-except Exception as e:
-    print("Error:", e)
+print("Streamlit version:", st.__version__)
+print("Has st.html:", hasattr(st, "html"))
+
+import components
+print("Components file:", components.__file__)
+print("Has render_html_block:", hasattr(components, "render_html_block"))
