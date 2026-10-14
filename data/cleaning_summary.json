@@ -1,16 +1,13 @@
 {
-    "total_raw": 24531,
-    "valid_records": 7500,
-    "dropped_records": 17031,
-    "cancellations_dropped": 10624,
-    "zero_price_dropped": 2517,
-    "null_description_dropped": 1454,
-    "guest_customers": 1294,
-    "exact_duplicates": 5268,
-    "unique_countries": 33,
-    "unique_products": 3876,
-    "unique_customers": 2180,
-    "min_date": "2024-01-01 04:30:01",
-    "max_date": "2026-10-08 08:06:00",
-    "total_revenue": 4780292940.0
+    "total_raw": 541909,
+    "valid_records": 30000,
+    "international_records": 20000,
+    "vietnam_records": 10000,
+    "guest_customers": 0,
+    "unique_countries": 24,
+    "unique_products": 7378,
+    "unique_customers": 4991,
+    "min_date": "2025-01-01 02:00:31",
+    "max_date": "2026-10-10 14:00:00",
+    "total_revenue": 19805795347.0
 }

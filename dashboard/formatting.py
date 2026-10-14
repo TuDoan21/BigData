@@ -147,6 +147,9 @@ def format_giao_dich_table(df: pd.DataFrame, symbol: str = "VNĐ") -> pd.DataFra
     if "THANH_TIEN" in df_display.columns:
         df_display["THANH_TIEN_HIEN_THI"] = df_display["THANH_TIEN"].map(lambda x: format_currency(x, null_as_dash=True, symbol=symbol))
 
+    # Cột Tiền Tệ chuẩn hóa
+    df_display["TIEN_TE"] = symbol
+
     if "THOI_GIAN" in df_display.columns:
         df_display["THOI_GIAN_HIEN_THI"] = df_display["THOI_GIAN"].map(format_datetime)
 

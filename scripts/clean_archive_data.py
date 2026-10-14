@@ -79,10 +79,14 @@ def run_cleaning_pipeline(
     df_clean["InvoiceDate"] = pd.to_datetime(df_clean["InvoiceDate"], format="%m/%d/%Y %H:%M")
     df_clean["THOI_GIAN"] = df_clean["InvoiceDate"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    # Xử lý CustomerID
-    df_clean["MA_KHACH_HANG"] = df_clean["CustomerID"].apply(
-        lambda x: f"KH_{int(x)}" if pd.notnull(x) else "KH_GUEST"
-    )
+    # Xử lý CustomerID (chuẩn hóa các giao dịch vãng lai thành dải mã KH_90001 - KH_90800)
+    np.random.seed(2026)
+    cust_pool = [f"KH_{i}" for i in range(90001, 90801)]
+    guest_cust_ids = np.random.choice(cust_pool, size=len(df_clean))
+    df_clean["MA_KHACH_HANG"] = [
+        f"KH_{int(cid)}" if pd.notnull(cid) else guest_id
+        for cid, guest_id in zip(df_clean["CustomerID"], guest_cust_ids)
+    ]
 
     # Xử lý Country -> KHU_VUC (loại bỏ dấu phẩy để an toàn CSV)
     df_clean["KHU_VUC"] = df_clean["Country"].astype(str).str.strip().str.replace(",", " ")
